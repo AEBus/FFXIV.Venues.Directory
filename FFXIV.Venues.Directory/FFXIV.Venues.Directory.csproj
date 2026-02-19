@@ -4,8 +4,8 @@
     <Authors>FFXIV Venues</Authors>
     <Company>FFXIV Venues</Company>
     <Version>0.1.0.0</Version>
-    <Description>We give you /venues.</Description>
-    <PackageProjectUrl>https://github.com/ffx/SamplePlugin</PackageProjectUrl>
+    <Description>Browse FFXIV roleplay venues in-game with filters, schedules, and venue details.</Description>
+    <PackageProjectUrl>https://github.com/AEBus/FFXIV.Venues.Directory</PackageProjectUrl>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -28,3 +28,4 @@
     <EmbeddedResource Include="Assets\loading.png" />
   </ItemGroup>
 </Project>
+

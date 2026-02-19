@@ -1,12 +1,12 @@
-using System;
+﻿using System;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
 using Dalamud.Game.Command;
 using Dalamud.Plugin.Services;
-using FFXIVVenues.Dalamud.Utils;
+using FFXIV.Venues.Directory.Utils;
 
-namespace FFXIVVenues.Dalamud.Commands.Brokerage;
+namespace FFXIV.Venues.Directory.Commands.Brokerage;
 
 internal sealed class CommandBroker : IDisposable
 {
@@ -64,3 +64,4 @@ internal sealed class CommandBroker : IDisposable
         }
     }
 }
+

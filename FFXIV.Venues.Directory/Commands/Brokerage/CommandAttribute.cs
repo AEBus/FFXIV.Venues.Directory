@@ -1,6 +1,6 @@
-using System;
+﻿using System;
 
-namespace FFXIVVenues.Dalamud.Commands.Brokerage;
+namespace FFXIV.Venues.Directory.Commands.Brokerage;
 
 [AttributeUsage(AttributeTargets.Class, AllowMultiple = true, Inherited = false)]
 internal sealed class CommandAttribute : Attribute
@@ -14,3 +14,4 @@ internal sealed class CommandAttribute : Attribute
         CommandDescription = commandDescription;
     }
 }
+

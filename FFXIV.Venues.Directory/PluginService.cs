@@ -2,7 +2,7 @@
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 
-namespace FFXIVVenues.Dalamud;
+namespace FFXIV.Venues.Directory;
 
 internal class PluginService
 {
@@ -11,3 +11,4 @@ internal class PluginService
     [PluginService] public static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] public static ITextureProvider TextureProvider { get; private set; } = null!;
 }
+

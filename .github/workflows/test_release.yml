@@ -1,0 +1,64 @@
+﻿name: Create Test Release
+
+on:
+  push:
+    tags:
+      - "testing_*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            10.x.x
+            9.x.x
+
+      - name: Restore dependencies
+        run: dotnet restore FFXIV.Venues.Directory.sln
+
+      - name: Download Dalamud
+        run: |
+          Invoke-WebRequest -Uri https://goatcorp.github.io/dalamud-distrib/stg/latest.zip -OutFile latest.zip
+          Expand-Archive -Force latest.zip "$env:AppData\XIVLauncher\addon\Hooks\dev\"
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $ver = '${{ github.ref_name }}' -replace '^testing_' -replace '^v'
+          dotnet build FFXIV.Venues.Directory.sln --no-restore --configuration Debug --nologo -p:Platform=x64 -p:Version=$ver -p:FileVersion=$ver -p:AssemblyVersion=$ver
+
+      - name: Write version into plugin json
+        shell: pwsh
+        run: |
+          $ver = '${{ github.ref_name }}' -replace '^testing_' -replace '^v'
+          $path = './FFXIV.Venues.Directory/bin/x64/Debug/FFXIV.Venues.Directory.json'
+          $json = Get-Content -Raw $path | ConvertFrom-Json
+          $json.AssemblyVersion = $ver
+          $json | ConvertTo-Json -Depth 10 | Set-Content -Path $path -Encoding utf8
+
+      - name: Archive
+        run: Compress-Archive -Path "FFXIV.Venues.Directory/bin/x64/Debug/*" -DestinationPath FFXIV.Venues.Directory.zip
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FFXIV.Venues.Directory-Testing
+          path: ./FFXIV.Venues.Directory.zip
+
+      - name: Create GitHub prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          name: FFXIV Venues Directory ${{ github.ref_name }}
+          files: ./FFXIV.Venues.Directory.zip
+          prerelease: true
+

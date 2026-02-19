@@ -1,8 +1,8 @@
-using System.Numerics;
+﻿using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
 
-namespace FFXIVVenues.Dalamud.UI.Abstractions;
+namespace FFXIV.Venues.Directory.UI.Abstractions;
 
 internal abstract class Window
 {
@@ -16,7 +16,7 @@ internal abstract class Window
 
     public bool Visible => _visible;
 
-    protected string Title { get; set; } = "FFXIV Venues";
+    protected string Title { get; set; } = "FFXIV Venues Directory";
     protected Vector2 InitialSize { get; set; } = new(600, 450);
     protected Vector2 MinimumSize { get; set; } = new(300, 200);
     protected Vector2 MaximumSize { get; set; } = new(1000, 1000);
@@ -50,3 +50,4 @@ internal abstract class Window
 
     public abstract void Render();
 }
+

@@ -3,20 +3,21 @@ using System.Net.Http;
 using Dalamud.Interface;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
-using FFXIVVenues.Dalamud.Commands.Brokerage;
-using FFXIVVenues.Dalamud.UI;
-using FFXIVVenues.Dalamud.UI.Abstractions;
+using FFXIV.Venues.Directory.Commands.Brokerage;
+using FFXIV.Venues.Directory.UI;
+using FFXIV.Venues.Directory.UI.Abstractions;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace FFXIVVenues.Dalamud;
+namespace FFXIV.Venues.Directory;
 
 public sealed class Plugin : IDalamudPlugin
 {
-    public string Name => "FFXIV Venues";
+    public string Name => "FFXIV Venues Directory";
     private readonly ServiceProvider _serviceProvider;
     private readonly IDalamudPluginInterface _pluginInterface;
     private readonly WindowBroker _windowBroker;
     private VenueDirectoryWindow? _directoryWindow;
+    private SettingsWindow? _settingsWindow;
 
     public Plugin(IDalamudPluginInterface pluginInterface)
     {
@@ -42,14 +43,14 @@ public sealed class Plugin : IDalamudPlugin
         this._serviceProvider = serviceCollection.BuildServiceProvider();
         this._windowBroker = this._serviceProvider.GetRequiredService<WindowBroker>();
         pluginInterface.UiBuilder.OpenMainUi += this.ToggleVenueDirectory;
-        pluginInterface.UiBuilder.OpenConfigUi += this.ToggleVenueDirectory;
+        pluginInterface.UiBuilder.OpenConfigUi += this.ToggleSettings;
         this._serviceProvider.GetService<CommandBroker>()?.ScanForCommands();
     }
 
     public void Dispose()
     {
         this._pluginInterface.UiBuilder.OpenMainUi -= this.ToggleVenueDirectory;
-        this._pluginInterface.UiBuilder.OpenConfigUi -= this.ToggleVenueDirectory;
+        this._pluginInterface.UiBuilder.OpenConfigUi -= this.ToggleSettings;
         this._serviceProvider.Dispose();
     }
 
@@ -64,4 +65,17 @@ public sealed class Plugin : IDalamudPlugin
         else
             this._directoryWindow.Show();
     }
+
+    private void ToggleSettings()
+    {
+        this._settingsWindow ??= this._windowBroker.Create<SettingsWindow>();
+        if (this._settingsWindow == null)
+            return;
+
+        if (this._settingsWindow.Visible)
+            this._settingsWindow.Hide();
+        else
+            this._settingsWindow.Show();
+    }
 }
+

@@ -1,9 +1,9 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace FFXIVVenues.Dalamud.Utils;
+namespace FFXIV.Venues.Directory.Utils;
 
 internal sealed class TypeMap<T> where T : class
 {
@@ -47,3 +47,4 @@ internal sealed class TypeMap<T> where T : class
         return ActivatorUtilities.CreateInstance(serviceProvider, type) as T;
     }
 }
+

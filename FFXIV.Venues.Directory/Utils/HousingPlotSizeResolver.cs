@@ -1,10 +1,10 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using FFXIVVenues.VenueModels;
 
-namespace FFXIVVenues.Dalamud.Utils;
+namespace FFXIV.Venues.Directory.Utils;
 
 internal static class HousingPlotSizeResolver
 {
@@ -78,3 +78,4 @@ internal enum PlotSize
     Medium = 1,
     Large = 2,
 }
+

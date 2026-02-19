@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
@@ -8,7 +8,7 @@ using Dalamud.Interface.Textures.TextureWraps;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 
-namespace FFXIVVenues.Dalamud;
+namespace FFXIV.Venues.Directory;
 
 public sealed class VenueService : IVenueService, IDisposable
 {
@@ -171,3 +171,4 @@ public interface IVenueService
 {
     IDalamudTextureWrap? GetVenueBanner(string venueId, Uri? bannerUri);
 }
+

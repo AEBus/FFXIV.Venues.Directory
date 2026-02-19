@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -13,12 +13,12 @@ using System.Threading.Tasks;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
 using Dalamud.Interface.Colors;
-using FFXIVVenues.Dalamud.UI.Abstractions;
-using FFXIVVenues.Dalamud.Utils;
+using FFXIV.Venues.Directory.UI.Abstractions;
+using FFXIV.Venues.Directory.Utils;
 using FFXIVVenues.VenueModels;
 using TimeZoneConverter;
 
-namespace FFXIVVenues.Dalamud.UI;
+namespace FFXIV.Venues.Directory.UI;
 
 internal class VenueDirectoryWindow : Window
 {
@@ -107,6 +107,7 @@ internal class VenueDirectoryWindow : Window
 
     private readonly HttpClient _httpClient;
     private readonly VenueService _venueService;
+    private readonly Configuration _configuration;
 
     private Task<Venue[]?>? _venuesTask;
     private Venue[]? _venues;
@@ -120,7 +121,8 @@ internal class VenueDirectoryWindow : Window
     private string? _selectedDataCenter;
     private string? _selectedWorld;
     private bool _onlyOpen = true;
-    private bool _withinWeek;
+    private bool _favoritesOnly;
+    private bool _visitedOnly;
     private bool _sfwOnly;
     private bool _nsfwOnly;
     private bool _sizeSmall = true;
@@ -133,11 +135,13 @@ internal class VenueDirectoryWindow : Window
     private float _splitRatio = 0.42f;
     private float _rightPaneWidth;
 
-    public VenueDirectoryWindow(UiBuilder uiBuilder, HttpClient httpClient, VenueService venueService)
+    public VenueDirectoryWindow(UiBuilder uiBuilder, HttpClient httpClient, VenueService venueService, Configuration configuration)
         : base(uiBuilder)
     {
         _httpClient = httpClient;
         _venueService = venueService;
+        _configuration = configuration;
+        EnsurePreferenceCollectionsInitialized();
 
         InitialSize = new Vector2(1200, 800);
         MaximumSize = new Vector2(float.MaxValue, float.MaxValue);
@@ -404,17 +408,19 @@ internal class VenueDirectoryWindow : Window
         ImGui.Text("Filters");
         ImGui.SameLine(0, 20);
 
-        ImGui.Checkbox("Open now", ref _onlyOpen);
+        ImGui.Checkbox("Open now##filter", ref _onlyOpen);
         ImGui.SameLine();
-        ImGui.Checkbox("Next week", ref _withinWeek);
+        ImGui.Checkbox("Favorite##filter", ref _favoritesOnly);
         ImGui.SameLine();
-        if (ImGui.Checkbox("SFW only", ref _sfwOnly) && _sfwOnly)
+        ImGui.Checkbox("Visited##filter", ref _visitedOnly);
+        ImGui.SameLine();
+        if (ImGui.Checkbox("SFW only##filter", ref _sfwOnly) && _sfwOnly)
         {
             _nsfwOnly = false;
         }
 
         ImGui.SameLine();
-        if (ImGui.Checkbox("NSFW only", ref _nsfwOnly) && _nsfwOnly)
+        if (ImGui.Checkbox("NSFW only##filter", ref _nsfwOnly) && _nsfwOnly)
         {
             _sfwOnly = false;
         }
@@ -498,15 +504,18 @@ internal class VenueDirectoryWindow : Window
             ImGui.SetClipboardText(location);
         }
 
-        ImGui.SameLine();
-        if (ImGui.Button("Visit (Lifestream)"))
+        if (_configuration.EnableLifestreamIntegration)
         {
-            var command = FormatLifestreamCommand(venue.Location);
-            if (!string.IsNullOrEmpty(command))
+            ImGui.SameLine();
+            if (ImGui.Button("Visit (Lifestream)"))
             {
-                if (!PluginService.CommandManager.ProcessCommand(command))
+                var command = FormatLifestreamCommand(venue.Location);
+                if (!string.IsNullOrEmpty(command))
                 {
-                    PluginService.ChatGui.PrintError($"Failed to execute {command}");
+                    if (!PluginService.CommandManager.ProcessCommand(command))
+                    {
+                        PluginService.ChatGui.PrintError($"Failed to execute {command}");
+                    }
                 }
             }
         }
@@ -530,6 +539,22 @@ internal class VenueDirectoryWindow : Window
         }
 
         ImGui.PopStyleVar(2);
+        ImGui.PushID($"VenuePreferenceActions::{venue.Id}");
+        var isFavorite = IsPreferredVenue(_configuration.FavoriteVenueIds, venue.Id);
+        var favoriteLabel = isFavorite ? "Unfavorite venue" : "Favorite venue";
+        if (ImGui.Button(favoriteLabel))
+        {
+            SetPreferredVenue(_configuration.FavoriteVenueIds, venue.Id, !isFavorite);
+        }
+
+        ImGui.SameLine();
+        var isVisited = IsPreferredVenue(_configuration.VisitedVenueIds, venue.Id);
+        if (ImGui.Checkbox("Visited", ref isVisited))
+        {
+            SetPreferredVenue(_configuration.VisitedVenueIds, venue.Id, isVisited);
+        }
+
+        ImGui.PopID();
 
         if (!venue.Sfw)
         {
@@ -938,9 +963,14 @@ internal class VenueDirectoryWindow : Window
             query = query.Where(v => v.Resolution?.IsNow == true);
         }
 
-        if (_withinWeek)
+        if (_favoritesOnly)
         {
-            query = query.Where(v => v.Resolution?.IsWithinWeek != false);
+            query = query.Where(v => IsPreferredVenue(_configuration.FavoriteVenueIds, v.Id));
+        }
+
+        if (_visitedOnly)
+        {
+            query = query.Where(v => IsPreferredVenue(_configuration.VisitedVenueIds, v.Id));
         }
 
         if (_sfwOnly)
@@ -963,6 +993,44 @@ internal class VenueDirectoryWindow : Window
         }
 
         return query;
+    }
+
+    private void EnsurePreferenceCollectionsInitialized()
+    {
+        _configuration.FavoriteVenueIds ??= new List<string>();
+        _configuration.VisitedVenueIds ??= new List<string>();
+    }
+
+    private static bool IsPreferredVenue(IEnumerable<string>? venueIds, string? venueId)
+    {
+        if (string.IsNullOrWhiteSpace(venueId) || venueIds == null)
+        {
+            return false;
+        }
+
+        return venueIds.Any(id => string.Equals(id, venueId, StringComparison.Ordinal));
+    }
+
+    private void SetPreferredVenue(List<string>? venueIds, string? venueId, bool enabled)
+    {
+        if (venueIds == null || string.IsNullOrWhiteSpace(venueId))
+        {
+            return;
+        }
+
+        var existingIndex = venueIds.FindIndex(id => string.Equals(id, venueId, StringComparison.Ordinal));
+        if (enabled && existingIndex < 0)
+        {
+            venueIds.Add(venueId);
+            _configuration.Save(PluginService.PluginInterface);
+            return;
+        }
+
+        if (!enabled && existingIndex >= 0)
+        {
+            venueIds.RemoveAt(existingIndex);
+            _configuration.Save(PluginService.PluginInterface);
+        }
     }
 
     private void EnsureSelection(IReadOnlyList<Venue> venues)
@@ -1447,3 +1515,4 @@ internal class VenueDirectoryWindow : Window
         }
     }
 }
+
