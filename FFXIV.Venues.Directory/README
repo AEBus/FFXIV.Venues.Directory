@@ -1,0 +1,18 @@
+FFXIV Venues Directory (Plugin Project)
+
+This folder is the actual Dalamud plugin project.
+
+If you just want user-facing docs, start from the repository root:
+../README.md
+
+What this project contains:
+- In-game browser for approved FFXIV Venues listings.
+- Search/filter/sort UI with venue details, schedules, tags, and banner preview.
+- Local preference state (favorite / visited).
+- Optional visit integration button that is shown only when a compatible third-party plugin is installed and enabled.
+
+Command:
+- /ffxivvenues
+
+Build from repo root:
+- dotnet build FFXIV.Venues.Directory.sln -c Release -p:Platform=x64
