@@ -27,6 +27,32 @@ namespace FFXIV.Venues.Directory.Features.Directory.Ui;
 internal sealed class DirectoryBrowserWindow : Window
 {
     private sealed record VenueRouteOption(string DisplayText, string CopyText, string? LifestreamArguments);
+    private sealed class PreparedVenue
+    {
+        public required DirectoryVenue Venue { get; init; }
+        public required string Id { get; init; }
+        public required string DisplayName { get; init; }
+        public required string SearchText { get; init; }
+        public required HashSet<string> TagSet { get; init; }
+        public required string? Region { get; init; }
+        public required string? DataCenter { get; init; }
+        public required string? World { get; init; }
+        public required bool IsOpen { get; init; }
+        public required bool IsNsfw { get; init; }
+        public required bool HasAdultServices { get; init; }
+        public required bool IsApartment { get; init; }
+        public required HousingPlotSize? PlotSize { get; init; }
+        public required string VenueTypeLabel { get; init; }
+        public required int VenueTypeSortKey { get; init; }
+        public required string StatusText { get; init; }
+        public required DateTimeOffset StatusSortKey { get; init; }
+        public required string TableAddress { get; init; }
+        public required string LocationKey { get; init; }
+        public required List<VenueRouteOption> RouteOptions { get; init; }
+        public required string? SanitizedDescription { get; init; }
+        public required int SanitizedDescriptionHash { get; init; }
+        public required DirectorySchedule[] SortedSchedule { get; init; }
+    }
 
     private const float BannerMaxWidth = 520f;
     private const float MinPanelWidth = 320f;
@@ -120,6 +146,8 @@ internal sealed class DirectoryBrowserWindow : Window
             { "New Zealand Standard Time", "NZST" },
             { "New Zealand Daylight Time", "NZDT" }
         };
+    private static readonly Dictionary<string, TimeZoneInfo?> TimeZoneInfoCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly object TimeZoneInfoCacheGate = new();
     private static readonly Dictionary<int, string> ProblemSymbolMap = new()
     {
         { 0x2728, "*" }, // ✨
@@ -160,6 +188,7 @@ internal sealed class DirectoryBrowserWindow : Window
     private readonly PlotSizeLookup _housingPlotSizeResolver;
 
     private Task<DirectoryVenue[]?>? _venuesTask;
+    private Task<PreparedVenue[]>? _prepareVenuesTask;
     private DirectoryVenue[]? _venues;
     private string? _loadError;
     private DateTimeOffset _lastRefresh;
@@ -183,9 +212,18 @@ internal sealed class DirectoryBrowserWindow : Window
     private readonly List<string> _dataCenters = new();
     private readonly List<string> _regions = new();
     private readonly List<string> _worlds = new();
+    private readonly List<PreparedVenue> _preparedVenues = new();
+    private readonly Dictionary<string, PreparedVenue> _preparedVenueById = new(StringComparer.Ordinal);
+    private readonly List<PreparedVenue> _filteredVenues = new();
+    private readonly List<PreparedVenue> _sortedVenues = new();
+    private readonly HashSet<string> _favoriteVenueIds = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _visitedVenueIds = new(StringComparer.Ordinal);
     private float _splitRatio = 0.42f;
     private float _rightPaneWidth;
     private readonly Dictionary<string, int> _selectedRouteIndices = new(StringComparer.Ordinal);
+    private bool _filtersDirty = true;
+    private bool _sortDirty = true;
+    private int _sortSignature = int.MinValue;
 
     public DirectoryBrowserWindow(
         HttpClient httpClient,
@@ -201,6 +239,7 @@ internal sealed class DirectoryBrowserWindow : Window
         _lifestreamIpc = lifestreamIpc;
         _housingPlotSizeResolver = housingPlotSizeResolver;
         EnsurePreferenceCollectionsInitialized();
+        InitializePreferenceLookups();
 
         Size = ImGuiHelpers.ScaledVector2(1200f, 800f);
         SizeCondition = ImGuiCond.FirstUseEver;
@@ -215,17 +254,18 @@ internal sealed class DirectoryBrowserWindow : Window
     {
         EnsureVenuesRequested();
         TryConsumeVenueTask();
+        TryConsumePreparedVenuesTask();
 
-        if (_venues == null)
+        if (_venues == null || _prepareVenuesTask is { IsCompleted: false })
         {
             DrawLoadingState();
             return;
         }
 
-        var filteredVenues = ApplyFilters(_venues).ToList();
-        EnsureSelection(filteredVenues);
+        RefreshFilteredVenuesIfNeeded();
+        EnsureSelection(_filteredVenues);
 
-        DrawToolbar(filteredVenues.Count);
+        DrawToolbar(_filteredVenues.Count);
         ImGui.Separator();
 
         var region = ImGui.GetContentRegionAvail();
@@ -250,7 +290,7 @@ internal sealed class DirectoryBrowserWindow : Window
             {
                 DrawFilters();
                 ImGui.Separator();
-                DrawVenueTable(filteredVenues);
+                DrawVenueTable(_filteredVenues);
             }
         }
 
@@ -270,7 +310,12 @@ internal sealed class DirectoryBrowserWindow : Window
         {
             if (detailPane)
             {
-                var selected = filteredVenues.FirstOrDefault(v => v.Id == _selectedVenueId);
+                PreparedVenue? selected = null;
+                if (_selectedVenueId != null)
+                {
+                    _preparedVenueById.TryGetValue(_selectedVenueId, out selected);
+                }
+
                 if (selected == null)
                 {
                     ImGui.TextColored(ImGuiColors.DalamudYellow, GetEmptySelectionMessage());
@@ -294,8 +339,17 @@ internal sealed class DirectoryBrowserWindow : Window
     private void TriggerRefresh()
     {
         _venuesTask = _httpClient.GetFromJsonAsync<DirectoryVenue[]>("venue?approved=true");
+        _prepareVenuesTask = null;
         _loadError = null;
         _venues = null;
+        _preparedVenues.Clear();
+        _preparedVenueById.Clear();
+        _filteredVenues.Clear();
+        _sortedVenues.Clear();
+        _selectedRouteIndices.Clear();
+        _filtersDirty = true;
+        _sortDirty = true;
+        _sortSignature = int.MinValue;
     }
 
     private void TryConsumeVenueTask()
@@ -316,19 +370,27 @@ internal sealed class DirectoryBrowserWindow : Window
         _venuesTask = null;
         _loadError = null;
         _lastRefresh = DateTimeOffset.UtcNow;
+        var venues = _venues;
+        _prepareVenuesTask = Task.Run(() => BuildPreparedVenues(venues));
+    }
 
-        _dataCenters.Clear();
-        _dataCenters.AddRange(_venues
-            .Select(v => v.Location?.DataCenter)
-            .Where(dc => !string.IsNullOrWhiteSpace(dc))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(dc => dc, StringComparer.OrdinalIgnoreCase)!);
+    private void TryConsumePreparedVenuesTask()
+    {
+        if (_prepareVenuesTask == null || !_prepareVenuesTask.IsCompleted)
+        {
+            return;
+        }
 
-        _regions.Clear();
-        _regions.AddRange(Regions);
+        if (_prepareVenuesTask.IsFaulted)
+        {
+            _loadError = _prepareVenuesTask.Exception?.GetBaseException().Message ?? "Failed to prepare venues.";
+            _prepareVenuesTask = null;
+            _venues = null;
+            return;
+        }
 
-        UpdateWorldOptions();
-        _selectedVenueId = _venues.FirstOrDefault()?.Id;
+        ApplyPreparedVenues(_prepareVenuesTask.Result);
+        _prepareVenuesTask = null;
     }
 
     private void DrawLoadingState()
@@ -341,6 +403,12 @@ internal sealed class DirectoryBrowserWindow : Window
                 TriggerRefresh();
             }
 
+            return;
+        }
+
+        if (_prepareVenuesTask is { IsCompleted: false })
+        {
+            ImGui.Text("Preparing venue directory...");
             return;
         }
 
@@ -374,7 +442,10 @@ internal sealed class DirectoryBrowserWindow : Window
     {
         using (ImRaii.ItemWidth(-1f))
         {
-            ImGui.InputTextWithHint("##VenueSearch", "Search by name, description or tag...", ref _searchText, 160);
+            if (ImGui.InputTextWithHint("##VenueSearch", "Search by name, description or tag...", ref _searchText, 160))
+            {
+                MarkFiltersDirty();
+            }
         }
 
         using (var filterTable = ImRaii.Table("FilterLayout"u8, 2, ImGuiTableFlags.SizingStretchSame))
@@ -436,6 +507,7 @@ internal sealed class DirectoryBrowserWindow : Window
                     if (ImGui.Selectable("Any", _selectedWorld == null))
                     {
                         _selectedWorld = null;
+                        MarkFiltersDirty();
                     }
 
                     ImGui.Separator();
@@ -444,13 +516,17 @@ internal sealed class DirectoryBrowserWindow : Window
                         if (ImGui.Selectable(world, string.Equals(world, _selectedWorld, StringComparison.OrdinalIgnoreCase)))
                         {
                             _selectedWorld = world;
+                            MarkFiltersDirty();
                         }
                     }
                 }
             }
 
             ImGui.TableNextColumn();
-            ImGui.InputTextWithHint("Tags", "Comma separated tags", ref _tagFilter, 128);
+            if (ImGui.InputTextWithHint("Tags", "Comma separated tags", ref _tagFilter, 128))
+            {
+                MarkFiltersDirty();
+            }
 
             ImGui.TableNextRow();
             ImGui.TableNextColumn();
@@ -466,21 +542,29 @@ internal sealed class DirectoryBrowserWindow : Window
         ImGui.Text("House size");
         ImGui.SameLine(0f, Scale(20f));
 
-        DrawSizeToggle("Apartment", ref _sizeApartment);
+        var changed = false;
+        changed |= DrawSizeToggle("Apartment", ref _sizeApartment);
         ImGui.SameLine();
-        DrawSizeToggle("Small", ref _sizeSmall);
+        changed |= DrawSizeToggle("Small", ref _sizeSmall);
         ImGui.SameLine();
-        DrawSizeToggle("Medium", ref _sizeMedium);
+        changed |= DrawSizeToggle("Medium", ref _sizeMedium);
         ImGui.SameLine();
-        DrawSizeToggle("Large", ref _sizeLarge);
+        changed |= DrawSizeToggle("Large", ref _sizeLarge);
+        if (changed)
+        {
+            MarkFiltersDirty();
+        }
     }
 
-    private void DrawSizeToggle(string label, ref bool flag)
+    private bool DrawSizeToggle(string label, ref bool flag)
     {
-        if (ImGui.Checkbox(label, ref flag) && !_sizeApartment && !_sizeSmall && !_sizeMedium && !_sizeLarge)
+        var changed = ImGui.Checkbox(label, ref flag);
+        if (changed && !_sizeApartment && !_sizeSmall && !_sizeMedium && !_sizeLarge)
         {
             flag = true;
         }
+
+        return changed;
     }
 
     private void DrawFilterToggles()
@@ -489,25 +573,36 @@ internal sealed class DirectoryBrowserWindow : Window
         ImGui.Text("Filters");
         ImGui.SameLine(0f, Scale(20f));
 
-        ImGui.Checkbox("Open now##filter", ref _onlyOpen);
+        var changed = ImGui.Checkbox("Open now##filter", ref _onlyOpen);
         ImGui.SameLine();
-        ImGui.Checkbox("Favorite##filter", ref _favoritesOnly);
+        changed |= ImGui.Checkbox("Favorite##filter", ref _favoritesOnly);
         ImGui.SameLine();
-        ImGui.Checkbox("Visited##filter", ref _visitedOnly);
+        changed |= ImGui.Checkbox("Visited##filter", ref _visitedOnly);
         ImGui.SameLine();
-        if (ImGui.Checkbox("SFW only##filter", ref _sfwOnly) && _sfwOnly)
+        var sfwChanged = ImGui.Checkbox("SFW only##filter", ref _sfwOnly);
+        changed |= sfwChanged;
+        if (sfwChanged && _sfwOnly)
         {
             _nsfwOnly = false;
+            changed = true;
         }
 
         ImGui.SameLine();
-        if (ImGui.Checkbox("NSFW only##filter", ref _nsfwOnly) && _nsfwOnly)
+        var nsfwChanged = ImGui.Checkbox("NSFW only##filter", ref _nsfwOnly);
+        changed |= nsfwChanged;
+        if (nsfwChanged && _nsfwOnly)
         {
             _sfwOnly = false;
+            changed = true;
+        }
+
+        if (changed)
+        {
+            MarkFiltersDirty();
         }
     }
 
-    private void DrawVenueTable(IReadOnlyList<DirectoryVenue> venues)
+    private void DrawVenueTable(IReadOnlyList<PreparedVenue> venues)
     {
         if (venues.Count == 0)
         {
@@ -532,16 +627,16 @@ internal sealed class DirectoryBrowserWindow : Window
             ImGui.TableSetupColumn("Status", ImGuiTableColumnFlags.WidthStretch, 0.15f);
             ImGui.TableHeadersRow();
 
-            var sorted = SortVenues(venues);
+            EnsureSortedVenues(ImGui.TableGetSortSpecs(), venues);
             var rowIndex = 0;
-            foreach (var venue in sorted)
+            foreach (var venue in _sortedVenues)
             {
-                var open = venue.Resolution?.IsNow == true;
+                var open = venue.IsOpen;
                 var nameColor = open ? ImGuiColors.DalamudViolet : ImGuiColors.ParsedGrey;
-                var statusText = FormatStatusLine(venue);
+                var statusText = venue.StatusText;
                 var isSelected = string.Equals(_selectedVenueId, venue.Id, StringComparison.Ordinal);
-                var addressText = FormatAddressForTable(venue);
-                var venueTypeLabel = GetVenueTypeLabel(venue);
+                var addressText = venue.TableAddress;
+                var venueTypeLabel = venue.VenueTypeLabel;
 
                 ImGui.TableNextRow();
                 ImGui.TableSetColumnIndex(1);
@@ -553,11 +648,10 @@ internal sealed class DirectoryBrowserWindow : Window
                 ImGui.TableSetColumnIndex(0);
                 using (ImRaii.PushId(rowIndex++))
                 {
-                    var displayName = string.IsNullOrWhiteSpace(venue.Name) ? "Unnamed venue" : NormalizeDisplayText(venue.Name);
                     using var rowHighlight = ImRaii.PushColor(ImGuiCol.Header, new Vector4(0.26f, 0.30f, 0.50f, 0.80f))
                         .Push(ImGuiCol.HeaderHovered, new Vector4(0.24f, 0.28f, 0.45f, 0.85f))
                         .Push(ImGuiCol.HeaderActive, new Vector4(0.30f, 0.35f, 0.58f, 0.90f));
-                    if (ImGui.Selectable(displayName, isSelected, ImGuiSelectableFlags.SpanAllColumns, new Vector2(0f, rowHeight)))
+                    if (ImGui.Selectable(venue.DisplayName, isSelected, ImGuiSelectableFlags.SpanAllColumns, new Vector2(0f, rowHeight)))
                     {
                         _selectedVenueId = venue.Id;
                     }
@@ -596,9 +690,10 @@ internal sealed class DirectoryBrowserWindow : Window
         return "Select a venue from the list to see its details.";
     }
 
-    private void DrawVenueDetails(DirectoryVenue venue)
+    private void DrawVenueDetails(PreparedVenue venue)
     {
-        var banner = _venueService.GetVenueBanner(venue.Id, venue.BannerUri);
+        var source = venue.Venue;
+        var banner = _venueService.GetVenueBanner(source.Id, source.BannerUri);
         if (banner != null)
         {
             var padding = ImGui.GetStyle().WindowPadding.X * 2f;
@@ -610,7 +705,7 @@ internal sealed class DirectoryBrowserWindow : Window
         }
 
         ImGui.SetWindowFontScale(1.5f);
-        var headerName = string.IsNullOrWhiteSpace(venue.Name) ? "Unnamed venue" : NormalizeDisplayText(venue.Name);
+        var headerName = venue.DisplayName;
         var headerSize = ImGui.CalcTextSize(headerName);
         var headerPos = ImGui.GetCursorScreenPos();
         var headerDrawList = ImGui.GetWindowDrawList();
@@ -624,7 +719,7 @@ internal sealed class DirectoryBrowserWindow : Window
         ImGui.SetCursorScreenPos(new Vector2(headerPos.X, headerPos.Y + headerSize.Y));
         ImGui.SetWindowFontScale(1f);
 
-        var routeOptions = BuildRouteOptions(venue);
+        var routeOptions = venue.RouteOptions;
         var selectedRouteIndex = GetSelectedRouteIndex(venue.Id, routeOptions.Count);
         var selectedRoute = routeOptions[selectedRouteIndex];
         ImGui.TextDisabled(selectedRoute.DisplayText);
@@ -678,44 +773,42 @@ internal sealed class DirectoryBrowserWindow : Window
                 }
             }
 
-            if (venue.Website != null)
+            if (source.Website != null)
             {
                 ImGui.SameLine();
                 if (ImGui.Button("Website"))
                 {
-                    Util.OpenLink(venue.Website.ToString());
+                    Util.OpenLink(source.Website.ToString());
                 }
             }
 
-            if (venue.Discord != null)
+            if (source.Discord != null)
             {
                 ImGui.SameLine();
                 if (ImGui.Button("Discord"))
                 {
-                    Util.OpenLink(venue.Discord.ToString());
+                    Util.OpenLink(source.Discord.ToString());
                 }
             }
         }
 
         using (ImRaii.PushId(HashCode.Combine("VenuePreferenceActions", venue.Id)))
         {
-            var isFavorite = IsPreferredVenue(_configuration.FavoriteVenueIds, venue.Id);
+            var isFavorite = _favoriteVenueIds.Contains(venue.Id);
             if (ImGui.Checkbox("Favorite venue", ref isFavorite))
             {
-                SetPreferredVenue(_configuration.FavoriteVenueIds, venue.Id, isFavorite);
+                SetPreferredVenue(_configuration.FavoriteVenueIds, _favoriteVenueIds, venue.Id, isFavorite);
             }
 
             ImGui.SameLine();
-            var isVisited = IsPreferredVenue(_configuration.VisitedVenueIds, venue.Id);
+            var isVisited = _visitedVenueIds.Contains(venue.Id);
             if (ImGui.Checkbox("Visited", ref isVisited))
             {
-                SetPreferredVenue(_configuration.VisitedVenueIds, venue.Id, isVisited);
+                SetPreferredVenue(_configuration.VisitedVenueIds, _visitedVenueIds, venue.Id, isVisited);
             }
         }
 
-        var openlyNsfw = IsOpenlyNsfwVenue(venue);
-        var hasAdultServices = HasAdultServicesTag(venue);
-        var warningText = GetVenueWarningText(openlyNsfw, hasAdultServices);
+        var warningText = GetVenueWarningText(venue.IsNsfw, venue.HasAdultServices);
         if (warningText != null)
         {
             DrawSection("NsfwWarningCard", HighlightSectionBackground, () =>
@@ -726,33 +819,26 @@ internal sealed class DirectoryBrowserWindow : Window
             });
         }
 
-        if (venue.Description?.Count > 0)
+        if (!string.IsNullOrWhiteSpace(venue.SanitizedDescription))
         {
             DrawSection("DescriptionCard", () =>
             {
-                var joined = string.Join("\n", venue.Description.Where(para => !string.IsNullOrWhiteSpace(para)));
-                var sanitized = SanitizeDescription(joined);
-                if (string.IsNullOrWhiteSpace(sanitized))
-                {
-                    return;
-                }
-
-                DrawDescriptionWithLinks(sanitized, venue.Id, joined.GetHashCode(StringComparison.Ordinal));
+                DrawDescriptionWithLinks(venue.SanitizedDescription, venue.Id, venue.SanitizedDescriptionHash);
             });
         }
 
         DrawSection("ScheduleCard", HighlightSectionBackground, () =>
         {
-            if (venue.Resolution != null)
+            if (source.Resolution != null)
             {
-                var resolution = venue.Resolution;
+                var resolution = source.Resolution;
                 var label = resolution.IsNow
                     ? $"Open now until {FormatShortTime(resolution.End)}!"
                     : $"Next open {resolution.Start.ToLocalTime().ToString("dddd", CultureInfo.InvariantCulture)} at {FormatShortTime(resolution.Start)}";
                 ImGui.TextColored(ImGuiColors.DalamudViolet, label);
             }
 
-            if (venue.Schedule?.Count > 0)
+            if (venue.SortedSchedule.Length > 0)
             {
                 var tableFlags = ImGuiTableFlags.SizingStretchProp |
                                  ImGuiTableFlags.NoHostExtendX |
@@ -764,10 +850,11 @@ internal sealed class DirectoryBrowserWindow : Window
                     {
                         ImGui.TableSetupColumn("Day", ImGuiTableColumnFlags.WidthStretch, 0.62f);
                         ImGui.TableSetupColumn("Time", ImGuiTableColumnFlags.WidthStretch, 0.38f);
+                        var currentDay = DateTime.Now.DayOfWeek;
 
-                        foreach (var schedule in venue.Schedule.OrderBy(s => s.Day).ThenBy(s => s.Start?.Hour ?? 0))
+                        foreach (var schedule in venue.SortedSchedule)
                         {
-                            var (start, end, _, localDay) = FormatScheduleTimes(schedule, DateTime.Now.DayOfWeek);
+                            var (start, end, _, localDay) = FormatScheduleTimes(schedule, currentDay);
                             var label = FormatScheduleLabel(schedule, localDay);
                             var isActive = schedule.Resolution?.IsNow == true;
                             var labelColor = isActive ? ImGuiColors.DalamudViolet : ImGuiColors.DalamudWhite;
@@ -785,9 +872,9 @@ internal sealed class DirectoryBrowserWindow : Window
             }
         });
 
-        if (venue.Tags?.Count > 0)
+        if (source.Tags?.Count > 0)
         {
-            DrawSection("TagsCard", () => DrawTagChips(venue.Tags));
+            DrawSection("TagsCard", () => DrawTagChips(source.Tags));
         }
     }
 
@@ -854,6 +941,11 @@ internal sealed class DirectoryBrowserWindow : Window
         var tagIndex = 0;
         foreach (var tag in tags)
         {
+            if (string.IsNullOrWhiteSpace(tag))
+            {
+                continue;
+            }
+
             var size = ImGui.CalcTextSize(tag);
             var chipWidth = size.X + framePadding.X * 2f;
             var chipHeight = size.Y + framePadding.Y * 2f;
@@ -1236,15 +1328,57 @@ internal sealed class DirectoryBrowserWindow : Window
         return last is not '.' and not '!' and not '?' and not ';' and not ':';
     }
 
-    private IEnumerable<DirectoryVenue> SortVenues(IEnumerable<DirectoryVenue> venues)
+    private void EnsureSortedVenues(ImGuiTableSortSpecsPtr sortSpecs, IReadOnlyList<PreparedVenue> venues)
     {
-        var sortSpecs = ImGui.TableGetSortSpecs();
-        if (sortSpecs.SpecsCount == 0)
+        var signature = BuildSortSignature(sortSpecs);
+        if (!_sortDirty && !sortSpecs.SpecsDirty && signature == _sortSignature && _sortedVenues.Count == venues.Count)
         {
-            return venues.OrderBy(v => v.Name ?? string.Empty, StringComparer.OrdinalIgnoreCase);
+            return;
         }
 
-        IOrderedEnumerable<DirectoryVenue>? ordered = null;
+        _sortedVenues.Clear();
+        _sortedVenues.AddRange(venues);
+
+        if (_sortedVenues.Count > 1)
+        {
+            if (sortSpecs.SpecsCount == 0)
+            {
+                _sortedVenues.Sort(static (left, right) =>
+                {
+                    var compare = StringComparer.OrdinalIgnoreCase.Compare(left.DisplayName, right.DisplayName);
+                    return compare != 0 ? compare : StringComparer.Ordinal.Compare(left.Id, right.Id);
+                });
+            }
+            else
+            {
+                _sortedVenues.Sort((left, right) => ComparePreparedVenues(left, right, sortSpecs));
+            }
+        }
+
+        _sortDirty = false;
+        _sortSignature = signature;
+        sortSpecs.SpecsDirty = false;
+    }
+
+    private static int BuildSortSignature(ImGuiTableSortSpecsPtr sortSpecs)
+    {
+        unchecked
+        {
+            var hash = 17;
+            hash = (hash * 31) + sortSpecs.SpecsCount;
+            for (var i = 0; i < sortSpecs.SpecsCount; i++)
+            {
+                var spec = sortSpecs.Specs[i];
+                hash = (hash * 31) + spec.ColumnIndex;
+                hash = (hash * 31) + (int)spec.SortDirection;
+            }
+
+            return hash;
+        }
+    }
+
+    private static int ComparePreparedVenues(PreparedVenue left, PreparedVenue right, ImGuiTableSortSpecsPtr sortSpecs)
+    {
         for (var i = 0; i < sortSpecs.SpecsCount; i++)
         {
             var spec = sortSpecs.Specs[i];
@@ -1253,26 +1387,27 @@ internal sealed class DirectoryBrowserWindow : Window
                 continue;
             }
 
-            Func<DirectoryVenue, IComparable?> keySelector = spec.ColumnIndex switch
+            var comparison = spec.ColumnIndex switch
             {
-                0 => v => v.Name ?? string.Empty,
-                1 => v => GetLocationKey(v),
-                2 => v => GetVenueTypeSortKey(v),
-                3 => v => GetStatusSortKey(v),
-                _ => v => v.Name ?? string.Empty
+                0 => StringComparer.OrdinalIgnoreCase.Compare(left.DisplayName, right.DisplayName),
+                1 => StringComparer.OrdinalIgnoreCase.Compare(left.LocationKey, right.LocationKey),
+                2 => left.VenueTypeSortKey.CompareTo(right.VenueTypeSortKey),
+                3 => left.StatusSortKey.CompareTo(right.StatusSortKey),
+                _ => StringComparer.OrdinalIgnoreCase.Compare(left.DisplayName, right.DisplayName),
             };
 
-            ordered = ordered == null
-                ? spec.SortDirection == ImGuiSortDirection.Ascending
-                    ? venues.OrderBy(keySelector)
-                    : venues.OrderByDescending(keySelector)
-                : spec.SortDirection == ImGuiSortDirection.Ascending
-                    ? ordered.ThenBy(keySelector)
-                    : ordered.ThenByDescending(keySelector);
+            if (comparison == 0)
+            {
+                continue;
+            }
+
+            return spec.SortDirection == ImGuiSortDirection.Descending
+                ? -comparison
+                : comparison;
         }
 
-        sortSpecs.SpecsDirty = false;
-        return ordered ?? venues;
+        var fallback = StringComparer.OrdinalIgnoreCase.Compare(left.DisplayName, right.DisplayName);
+        return fallback != 0 ? fallback : StringComparer.Ordinal.Compare(left.Id, right.Id);
     }
 
     private static DateTimeOffset GetStatusSortKey(DirectoryVenue venue)
@@ -1287,91 +1422,331 @@ internal sealed class DirectoryBrowserWindow : Window
         return resolution.IsNow ? resolution.End : resolution.Start;
     }
 
-    private IEnumerable<DirectoryVenue> ApplyFilters(IEnumerable<DirectoryVenue> venues)
+    private void RefreshFilteredVenuesIfNeeded()
     {
-        var query = venues;
-        if (!string.IsNullOrWhiteSpace(_searchText))
+        if (!_filtersDirty)
         {
-            var search = NormalizeForSearch(_searchText.Trim());
-            if (search.Length > 0)
+            return;
+        }
+
+        _filteredVenues.Clear();
+
+        var search = NormalizeForSearch(_searchText.Trim());
+        var tags = ParseTagFilter(_tagFilter);
+        foreach (var venue in _preparedVenues)
+        {
+            if (MatchesFilters(venue, search, tags))
             {
-                query = query.Where(v =>
-                    Contains(v.Name, search) ||
-                    (v.Description?.Any(d => Contains(d, search)) ?? false) ||
-                    (v.Tags?.Any(t => Contains(t, search)) ?? false));
+                _filteredVenues.Add(venue);
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(_tagFilter))
+        _filtersDirty = false;
+        _sortDirty = true;
+    }
+
+    private bool MatchesFilters(PreparedVenue venue, string search, string[] tags)
+    {
+        if (search.Length > 0 && !ContainsNormalized(venue.SearchText, search))
         {
-            var tags = _tagFilter.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            query = query.Where(v => v.Tags != null &&
-                                     tags.All(tag => v.Tags.Any(t => string.Equals(t, tag, StringComparison.OrdinalIgnoreCase))));
+            return false;
         }
 
-        if (!string.IsNullOrEmpty(_selectedRegion))
+        if (tags.Length > 0 && !tags.All(tag => venue.TagSet.Contains(tag)))
         {
-            query = query.Where(v =>
-                string.Equals(ResolveRegion(v.Location?.DataCenter), _selectedRegion, StringComparison.OrdinalIgnoreCase));
+            return false;
         }
 
-        if (!string.IsNullOrEmpty(_selectedDataCenter))
+        if (!string.IsNullOrEmpty(_selectedRegion) &&
+            !string.Equals(venue.Region, _selectedRegion, StringComparison.OrdinalIgnoreCase))
         {
-            query = query.Where(v =>
-                string.Equals(v.Location?.DataCenter, _selectedDataCenter, StringComparison.OrdinalIgnoreCase));
+            return false;
         }
 
-        if (!string.IsNullOrEmpty(_selectedWorld))
+        if (!string.IsNullOrEmpty(_selectedDataCenter) &&
+            !string.Equals(venue.DataCenter, _selectedDataCenter, StringComparison.OrdinalIgnoreCase))
         {
-            query = query.Where(v => string.Equals(v.Location?.World, _selectedWorld, StringComparison.OrdinalIgnoreCase));
+            return false;
         }
 
-        if (_onlyOpen)
+        if (!string.IsNullOrEmpty(_selectedWorld) &&
+            !string.Equals(venue.World, _selectedWorld, StringComparison.OrdinalIgnoreCase))
         {
-            query = query.Where(v => v.Resolution?.IsNow == true);
+            return false;
         }
 
-        if (_favoritesOnly)
+        if (_onlyOpen && !venue.IsOpen)
         {
-            query = query.Where(v => IsPreferredVenue(_configuration.FavoriteVenueIds, v.Id));
+            return false;
         }
 
-        if (_visitedOnly)
+        if (_favoritesOnly && !_favoriteVenueIds.Contains(venue.Id))
         {
-            query = query.Where(v => IsPreferredVenue(_configuration.VisitedVenueIds, v.Id));
+            return false;
         }
 
-        if (_sfwOnly)
+        if (_visitedOnly && !_visitedVenueIds.Contains(venue.Id))
         {
-            query = query.Where(v => !IsVenueNsfw(v));
-        }
-        else if (_nsfwOnly)
-        {
-            query = query.Where(IsVenueNsfw);
+            return false;
         }
 
-        var filterBySize = !(_sizeApartment && _sizeSmall && _sizeMedium && _sizeLarge);
-        if (filterBySize)
+        if (_sfwOnly && venue.IsNsfw)
         {
-            query = query.Where(v =>
+            return false;
+        }
+
+        if (_nsfwOnly && !venue.IsNsfw)
+        {
+            return false;
+        }
+
+        if (_sizeApartment && _sizeSmall && _sizeMedium && _sizeLarge)
+        {
+            return true;
+        }
+
+        if (venue.IsApartment)
+        {
+            return _sizeApartment;
+        }
+
+        return venue.PlotSize switch
+        {
+            HousingPlotSize.Small => _sizeSmall,
+            HousingPlotSize.Medium => _sizeMedium,
+            HousingPlotSize.Large => _sizeLarge,
+            _ => false,
+        };
+    }
+
+    private static string[] ParseTagFilter(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return Array.Empty<string>();
+        }
+
+        return value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    }
+
+    private static bool ContainsNormalized(string source, string search)
+    {
+        if (source.Length == 0)
+        {
+            return false;
+        }
+
+        return CultureInfo.CurrentCulture.CompareInfo.IndexOf(source, search, CompareOptions.IgnoreCase) >= 0;
+    }
+
+    private PreparedVenue[] BuildPreparedVenues(IEnumerable<DirectoryVenue> venues)
+    {
+        var preparedVenues = new List<PreparedVenue>();
+
+        foreach (var venue in venues)
+        {
+            if (venue == null)
             {
-                if (IsApartmentLocation(v.Location))
-                {
-                    return _sizeApartment;
-                }
+                continue;
+            }
 
-                if (!_housingPlotSizeResolver.TryGetSize(v.Location, out var size))
-                {
-                    return false;
-                }
-
-                return (size == HousingPlotSize.Small && _sizeSmall) ||
-                       (size == HousingPlotSize.Medium && _sizeMedium) ||
-                       (size == HousingPlotSize.Large && _sizeLarge);
-            });
+            try
+            {
+                var prepared = CreatePreparedVenue(venue);
+                preparedVenues.Add(prepared);
+            }
+            catch
+            {
+                // Ignore malformed venue payloads so a single bad API record does not break the whole window.
+            }
         }
 
-        return query;
+        return preparedVenues.ToArray();
+    }
+
+    private void ApplyPreparedVenues(IEnumerable<PreparedVenue> venues)
+    {
+        _preparedVenues.Clear();
+        _preparedVenueById.Clear();
+
+        foreach (var venue in venues)
+        {
+            _preparedVenues.Add(venue);
+            _preparedVenueById[venue.Id] = venue;
+        }
+
+        _dataCenters.Clear();
+        _dataCenters.AddRange(_preparedVenues
+            .Select(v => v.DataCenter)
+            .Where(dc => !string.IsNullOrWhiteSpace(dc))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(dc => dc, StringComparer.OrdinalIgnoreCase)!);
+
+        _regions.Clear();
+        _regions.AddRange(Regions);
+
+        UpdateWorldOptions();
+        _selectedRouteIndices.Clear();
+        _selectedVenueId = _preparedVenues.FirstOrDefault()?.Id;
+        _filtersDirty = true;
+        _sortDirty = true;
+        _sortSignature = int.MinValue;
+    }
+
+    private PreparedVenue CreatePreparedVenue(DirectoryVenue venue)
+    {
+        var venueId = string.IsNullOrWhiteSpace(venue.Id)
+            ? BuildFallbackVenueId(venue)
+            : venue.Id;
+        var displayName = string.IsNullOrWhiteSpace(venue.Name) ? "Unnamed venue" : NormalizeDisplayText(venue.Name);
+        var isApartment = IsApartmentLocation(venue.Location);
+        HousingPlotSize? plotSize = null;
+        if (!isApartment && _housingPlotSizeResolver.TryGetSize(venue.Location, out var resolvedSize))
+        {
+            plotSize = resolvedSize;
+        }
+
+        var sanitizedDescription = PrepareSanitizedDescription(venue.Description);
+        return new PreparedVenue
+        {
+            Venue = venue,
+            Id = venueId,
+            DisplayName = displayName,
+            SearchText = BuildSearchText(venue, displayName),
+            TagSet = CreateTagSet(venue.Tags),
+            Region = ResolveRegion(venue.Location?.DataCenter),
+            DataCenter = venue.Location?.DataCenter,
+            World = venue.Location?.World,
+            IsOpen = venue.Resolution?.IsNow == true,
+            IsNsfw = IsVenueNsfw(venue),
+            HasAdultServices = HasAdultServicesTag(venue),
+            IsApartment = isApartment,
+            PlotSize = plotSize,
+            VenueTypeLabel = GetVenueTypeLabel(isApartment, plotSize),
+            VenueTypeSortKey = GetVenueTypeSortKey(isApartment, plotSize),
+            StatusText = FormatStatusLine(venue),
+            StatusSortKey = GetStatusSortKey(venue),
+            TableAddress = FormatAddressForTable(venue),
+            LocationKey = GetLocationKey(venue),
+            RouteOptions = BuildRouteOptions(venue),
+            SanitizedDescription = sanitizedDescription,
+            SanitizedDescriptionHash = sanitizedDescription?.GetHashCode(StringComparison.Ordinal) ?? 0,
+            SortedSchedule = SortSchedule(venue.Schedule),
+        };
+    }
+
+    private static string BuildFallbackVenueId(DirectoryVenue venue)
+    {
+        var key = string.Join("|",
+            venue.Name ?? string.Empty,
+            venue.Location?.DataCenter ?? string.Empty,
+            venue.Location?.World ?? string.Empty,
+            venue.Location?.District ?? string.Empty,
+            venue.Location?.Ward.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+            venue.Location?.Plot.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+            venue.Location?.Apartment.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+            venue.Location?.Room.ToString(CultureInfo.InvariantCulture) ?? string.Empty);
+
+        return $"fallback:{key.GetHashCode(StringComparison.Ordinal)}";
+    }
+
+    private static HashSet<string> CreateTagSet(IEnumerable<string>? tags)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (tags == null)
+        {
+            return result;
+        }
+
+        foreach (var tag in tags)
+        {
+            if (!string.IsNullOrWhiteSpace(tag))
+            {
+                result.Add(tag);
+            }
+        }
+
+        return result;
+    }
+
+    private static string BuildSearchText(DirectoryVenue venue, string displayName)
+    {
+        var builder = new StringBuilder(displayName.Length + 64);
+        if (displayName.Length > 0)
+        {
+            builder.Append(displayName);
+        }
+
+        if (venue.Description is { Count: > 0 })
+        {
+            foreach (var line in venue.Description)
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
+
+                builder.Append('\n');
+                builder.Append(line);
+            }
+        }
+
+        if (venue.Tags is { Count: > 0 })
+        {
+            var hasTags = false;
+            foreach (var tag in venue.Tags)
+            {
+                if (string.IsNullOrWhiteSpace(tag))
+                {
+                    continue;
+                }
+
+                if (!hasTags)
+                {
+                    builder.Append('\n');
+                    hasTags = true;
+                }
+                else
+                {
+                    builder.Append(' ');
+                }
+
+                builder.Append(tag);
+            }
+        }
+
+        return NormalizeForSearch(builder.ToString());
+    }
+
+    private static string? PrepareSanitizedDescription(List<string>? description)
+    {
+        if (description is not { Count: > 0 })
+        {
+            return null;
+        }
+
+        var joined = string.Join("\n", description.Where(para => !string.IsNullOrWhiteSpace(para)));
+        if (joined.Length == 0)
+        {
+            return null;
+        }
+
+        var sanitized = SanitizeDescription(joined);
+        return string.IsNullOrWhiteSpace(sanitized) ? null : sanitized;
+    }
+
+    private static DirectorySchedule[] SortSchedule(List<DirectorySchedule>? schedule)
+    {
+        if (schedule is not { Count: > 0 })
+        {
+            return Array.Empty<DirectorySchedule>();
+        }
+
+        return schedule
+            .OrderBy(s => s.Day)
+            .ThenBy(s => s.Start?.Hour ?? 0)
+            .ThenBy(s => s.Start?.Minute ?? 0)
+            .ToArray();
     }
 
     private void EnsurePreferenceCollectionsInitialized()
@@ -1380,17 +1755,28 @@ internal sealed class DirectoryBrowserWindow : Window
         _configuration.VisitedVenueIds ??= new List<string>();
     }
 
-    private static bool IsPreferredVenue(IEnumerable<string>? venueIds, string? venueId)
+    private void InitializePreferenceLookups()
     {
-        if (string.IsNullOrWhiteSpace(venueId) || venueIds == null)
+        _favoriteVenueIds.Clear();
+        foreach (var id in _configuration.FavoriteVenueIds)
         {
-            return false;
+            if (!string.IsNullOrWhiteSpace(id))
+            {
+                _favoriteVenueIds.Add(id);
+            }
         }
 
-        return venueIds.Any(id => string.Equals(id, venueId, StringComparison.Ordinal));
+        _visitedVenueIds.Clear();
+        foreach (var id in _configuration.VisitedVenueIds)
+        {
+            if (!string.IsNullOrWhiteSpace(id))
+            {
+                _visitedVenueIds.Add(id);
+            }
+        }
     }
 
-    private void SetPreferredVenue(List<string>? venueIds, string? venueId, bool enabled)
+    private void SetPreferredVenue(List<string>? venueIds, HashSet<string> lookup, string? venueId, bool enabled)
     {
         if (venueIds == null || string.IsNullOrWhiteSpace(venueId))
         {
@@ -1401,18 +1787,22 @@ internal sealed class DirectoryBrowserWindow : Window
         if (enabled && existingIndex < 0)
         {
             venueIds.Add(venueId);
+            lookup.Add(venueId);
             _configuration.Save(DalamudServices.PluginInterface);
+            MarkFiltersDirty();
             return;
         }
 
         if (!enabled && existingIndex >= 0)
         {
             venueIds.RemoveAt(existingIndex);
+            lookup.Remove(venueId);
             _configuration.Save(DalamudServices.PluginInterface);
+            MarkFiltersDirty();
         }
     }
 
-    private void EnsureSelection(IReadOnlyList<DirectoryVenue> venues)
+    private void EnsureSelection(IReadOnlyList<PreparedVenue> venues)
     {
         if (venues.Count == 0)
         {
@@ -1420,7 +1810,20 @@ internal sealed class DirectoryBrowserWindow : Window
             return;
         }
 
-        if (_selectedVenueId == null || venues.All(v => v.Id != _selectedVenueId))
+        var hasSelection = false;
+        if (_selectedVenueId != null)
+        {
+            for (var i = 0; i < venues.Count; i++)
+            {
+                if (string.Equals(venues[i].Id, _selectedVenueId, StringComparison.Ordinal))
+                {
+                    hasSelection = true;
+                    break;
+                }
+            }
+        }
+
+        if (!hasSelection)
         {
             _selectedVenueId = venues[0].Id;
         }
@@ -1432,6 +1835,7 @@ internal sealed class DirectoryBrowserWindow : Window
         _selectedDataCenter = null;
         _selectedWorld = null;
         UpdateWorldOptions();
+        MarkFiltersDirty();
     }
 
     private void SetDataCenter(string? dataCenter)
@@ -1439,34 +1843,41 @@ internal sealed class DirectoryBrowserWindow : Window
         _selectedDataCenter = dataCenter;
         _selectedWorld = null;
         UpdateWorldOptions();
+        MarkFiltersDirty();
     }
 
     private void UpdateWorldOptions()
     {
         _worlds.Clear();
-        if (_venues == null)
+        if (_preparedVenues.Count == 0)
         {
             return;
         }
 
-        var query = _venues.AsEnumerable();
+        var query = _preparedVenues.AsEnumerable();
         if (!string.IsNullOrEmpty(_selectedRegion))
         {
             query = query.Where(v =>
-                string.Equals(ResolveRegion(v.Location?.DataCenter), _selectedRegion, StringComparison.OrdinalIgnoreCase));
+                string.Equals(v.Region, _selectedRegion, StringComparison.OrdinalIgnoreCase));
         }
 
         if (!string.IsNullOrEmpty(_selectedDataCenter))
         {
             query = query.Where(v =>
-                string.Equals(v.Location?.DataCenter, _selectedDataCenter, StringComparison.OrdinalIgnoreCase));
+                string.Equals(v.DataCenter, _selectedDataCenter, StringComparison.OrdinalIgnoreCase));
         }
 
         _worlds.AddRange(query
-            .Select(v => v.Location?.World)
+            .Select(v => v.World)
             .Where(w => !string.IsNullOrWhiteSpace(w))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(w => w, StringComparer.OrdinalIgnoreCase)!);
+    }
+
+    private void MarkFiltersDirty()
+    {
+        _filtersDirty = true;
+        _sortDirty = true;
     }
 
     private IEnumerable<string> GetRegionDataCenters()
@@ -1863,8 +2274,24 @@ internal sealed class DirectoryBrowserWindow : Window
 
     private static bool IsOpenlyNsfwVenue(DirectoryVenue venue) => venue.Sfw == false;
 
-    private static bool HasAdultServicesTag(DirectoryVenue venue) =>
-        venue.Tags?.Any(tag => tag.Contains("courtesan", StringComparison.OrdinalIgnoreCase)) == true;
+    private static bool HasAdultServicesTag(DirectoryVenue? venue)
+    {
+        if (venue?.Tags == null)
+        {
+            return false;
+        }
+
+        foreach (var tag in venue.Tags)
+        {
+            if (!string.IsNullOrWhiteSpace(tag) &&
+                tag.Contains("courtesan", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private static string? GetVenueWarningText(bool openlyNsfw, bool hasAdultServices)
     {
@@ -1886,46 +2313,36 @@ internal sealed class DirectoryBrowserWindow : Window
         return null;
     }
 
-    private string GetVenueTypeLabel(DirectoryVenue venue)
+    private static string GetVenueTypeLabel(bool isApartment, HousingPlotSize? size)
     {
-        if (IsApartmentLocation(venue.Location))
+        if (isApartment)
         {
             return "A";
         }
 
-        if (_housingPlotSizeResolver.TryGetSize(venue.Location, out var size))
+        return size switch
         {
-            return size switch
-            {
-                HousingPlotSize.Small => "S",
-                HousingPlotSize.Medium => "M",
-                HousingPlotSize.Large => "L",
-                _ => "?"
-            };
-        }
-
-        return "?";
+            HousingPlotSize.Small => "S",
+            HousingPlotSize.Medium => "M",
+            HousingPlotSize.Large => "L",
+            _ => "?",
+        };
     }
 
-    private int GetVenueTypeSortKey(DirectoryVenue venue)
+    private static int GetVenueTypeSortKey(bool isApartment, HousingPlotSize? size)
     {
-        if (IsApartmentLocation(venue.Location))
+        if (isApartment)
         {
             return 0;
         }
 
-        if (_housingPlotSizeResolver.TryGetSize(venue.Location, out var size))
+        return size switch
         {
-            return size switch
-            {
-                HousingPlotSize.Small => 1,
-                HousingPlotSize.Medium => 2,
-                HousingPlotSize.Large => 3,
-                _ => 4
-            };
-        }
-
-        return 4;
+            HousingPlotSize.Small => 1,
+            HousingPlotSize.Medium => 2,
+            HousingPlotSize.Large => 3,
+            _ => 4,
+        };
     }
 
     private static void DrawSizeBadge(string text, string idSuffix)
@@ -2058,10 +2475,28 @@ internal sealed class DirectoryBrowserWindow : Window
         }
 
         var trimmed = timeZoneId.Trim();
+        lock (TimeZoneInfoCacheGate)
+        {
+            if (TimeZoneInfoCache.TryGetValue(trimmed, out var cached))
+            {
+                if (cached != null)
+                {
+                    timeZone = cached;
+                    return true;
+                }
+
+                return false;
+            }
+        }
+
         try
         {
             var windowsId = TZConvert.IanaToWindows(trimmed);
             timeZone = TimeZoneInfo.FindSystemTimeZoneById(windowsId);
+            lock (TimeZoneInfoCacheGate)
+            {
+                TimeZoneInfoCache[trimmed] = timeZone;
+            }
             return true;
         }
         catch
@@ -2069,10 +2504,18 @@ internal sealed class DirectoryBrowserWindow : Window
             try
             {
                 timeZone = TimeZoneInfo.FindSystemTimeZoneById(trimmed);
+                lock (TimeZoneInfoCacheGate)
+                {
+                    TimeZoneInfoCache[trimmed] = timeZone;
+                }
                 return true;
             }
             catch
             {
+                lock (TimeZoneInfoCacheGate)
+                {
+                    TimeZoneInfoCache[trimmed] = null;
+                }
                 return false;
             }
         }
@@ -2135,31 +2578,25 @@ internal sealed class DirectoryBrowserWindow : Window
         return letters.Count == 0 ? name : new string(letters.ToArray());
     }
 
-    private static string FormatInterval(object? interval)
+    private static string FormatInterval(DirectoryInterval? interval)
     {
         if (interval == null)
         {
             return "Unknown";
         }
 
-        var intervalTypeRaw = interval.GetType().GetProperty("IntervalType")?.GetValue(interval);
-        var intervalType = intervalTypeRaw switch
+        var intervalType = interval.IntervalType switch
         {
             JsonElement { ValueKind: JsonValueKind.Number } number when number.TryGetInt32(out var n) => n.ToString(CultureInfo.InvariantCulture),
             JsonElement { ValueKind: JsonValueKind.String } text => text.GetString(),
-            _ => intervalTypeRaw?.ToString()
+            _ => interval.IntervalType.ToString()
         };
 
-        var intervalArgumentRaw = interval.GetType().GetProperty("IntervalArgument")?.GetValue(interval);
-        var argument = intervalArgumentRaw switch
+        var argument = interval.IntervalArgument switch
         {
             JsonElement { ValueKind: JsonValueKind.Number } number when number.TryGetInt32(out var n) => n,
             JsonElement { ValueKind: JsonValueKind.String } text when int.TryParse(text.GetString(), out var n) => n,
-            byte value => value,
-            short value => value,
-            int value => value,
-            long value => (int)value,
-            _ => int.TryParse(intervalArgumentRaw?.ToString(), out var parsed) ? parsed : 0
+            _ => int.TryParse(interval.IntervalArgument.ToString(), out var parsed) ? parsed : 0
         };
 
         return intervalType switch
@@ -2185,22 +2622,6 @@ internal sealed class DirectoryBrowserWindow : Window
         if (span.TotalHours < 24) return $"{Math.Round(span.TotalHours)} hours ago";
         if (span.TotalDays < 2) return "yesterday";
         return $"{Math.Round(span.TotalDays)} days ago";
-    }
-
-    private static bool Contains(string? source, string search)
-    {
-        if (string.IsNullOrWhiteSpace(source))
-        {
-            return false;
-        }
-
-        var normalizedSource = NormalizeForSearch(source);
-        if (normalizedSource.Length == 0)
-        {
-            return false;
-        }
-
-        return CultureInfo.CurrentCulture.CompareInfo.IndexOf(normalizedSource, search, CompareOptions.IgnoreCase) >= 0;
     }
 
     private static float Scale(float value) => value * ImGuiHelpers.GlobalScale;
