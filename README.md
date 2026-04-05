@@ -1,71 +1,35 @@
 # FFXIV Venues Directory
 
-If you want to browse FFXIV venues without alt-tabbing to a website, this plugin is for you.
+FFXIV Venues Directory lets you browse approved player venues from FFXIV Venues without leaving the game.
 
-It pulls approved venues from FFXIV Venues and shows them in a fast in-game directory with filters, sorting, and a detail panel.
+## What It Does
+- Shows a live in-game venue directory.
+- Lets you search by venue name, description text, and tags.
+- Helps you filter by region, data center, world, open status, content label, favorites, visited venues, and housing size.
+- Shows venue details including address, schedule, website or Discord links, and warning labels when relevant.
 
-## What You Get
+## Main Features
+- Search and filter approved venues in one window.
+- View venue addresses in a readable format.
+- See venue schedules converted to your local time.
+- Copy the current venue address from the detail panel.
+- Mark venues as favorites or visited.
+- Open website or Discord links directly from the detail view.
 
-- A live venue list you can refresh anytime.
-- Search by name, description, or tags.
-- Filters for:
-  - region, data center, world
-  - open now
-  - SFW / NSFW
-  - favorites / visited
-  - house size and apartments
-- Sortable table columns (Venue, Address, Size, Status).
-- Detail panel with:
-  - venue banner
-  - formatted address
-  - schedule converted to your local time
-  - clickable external links (website, Discord, links in descriptions)
-  - copy address
-  - optional visit button (visible only when a compatible third-party plugin is installed and enabled)
-- Local preference tracking (favorite / visited).
+## How To Use It
+1. Open the plugin with `/ffxivvenues`.
+2. Use the filters on the left to narrow the list.
+3. Select a venue from the table to view its details.
+4. Use the detail panel actions to copy the address or open links.
+5. Mark venues as favorite or visited if you want to track them locally.
 
-## Command
+## Optional Integration
+If you use a compatible travel plugin, an extra visit action can appear in the detail panel. If that plugin is not installed and enabled, the extra action is not shown.
 
-- `/ffxivvenues` - open the main window.
+## Notes
+- Venue data comes from the approved FFXIV Venues listing.
+- SFW and NSFW labels follow the source data.
+- Favorite and visited markers are stored locally.
 
-## Data Source
-
-The plugin uses the official FFXIV Venues API at runtime:
-
-- `https://api.ffxivvenues.com/v1/venue?approved=true`
-- `https://api.ffxivvenues.com/v1/venue/{venueId}/media` (fallback banner endpoint)
-
-No venue database is stored permanently by this plugin. Data is fetched live and cached in memory for the session.
-
-## Notes About Content Labels
-
-The plugin follows API data for `sfw` status.
-
-Warnings are shown in the detail panel using the same intent as the website:
-
-- openly NSFW
-- adult services (Courtesans tag)
-- both, when both conditions apply
-
-## Build (Development)
-
-From repository root:
-
-```bash
-dotnet build FFXIV.Venues.Directory.sln -c Release -p:Platform=x64
-```
-
-Output DLL:
-
-- `FFXIV.Venues.Directory/bin/x64/Release/FFXIV.Venues.Directory.dll`
-
-## Project Layout
-
-- `FFXIV.Venues.Directory/Core` - plugin entry and composition
-- `FFXIV.Venues.Directory/Infrastructure` - command/window/service wiring
-- `FFXIV.Venues.Directory/Features/Directory` - UI, filtering, domain models, media cache
-- `FFXIV.Venues.Directory/Integrations` - optional IPC integrations
-
-## Why This Exists
-
-The goal is simple: keep venue browsing inside the game, keep it fast, and keep it readable.
+## Availability
+This repository contains the source code for the plugin. Release availability depends on the current Dalamud distribution channel and plugin repository status.

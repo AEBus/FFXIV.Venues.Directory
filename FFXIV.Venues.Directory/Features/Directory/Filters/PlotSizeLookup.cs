@@ -62,6 +62,11 @@ internal sealed class PlotSizeLookup
         return true;
     }
 
+    public void WarmUp()
+    {
+        EnsureLoaded();
+    }
+
     private void EnsureLoaded()
     {
         if (_loaded)

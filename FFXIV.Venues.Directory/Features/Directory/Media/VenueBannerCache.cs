@@ -3,10 +3,12 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
 using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
 using Dalamud.Interface.Textures.TextureWraps;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
+using FFXIV.Venues.Directory.Infrastructure;
 
 namespace FFXIV.Venues.Directory.Features.Directory.Media;
 
@@ -21,6 +23,7 @@ public sealed class VenueBannerCache : IVenueBannerCache, IDisposable
     private readonly Dictionary<string, IDalamudTextureWrap?> _bannerByUri = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Task> _pendingRequests = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _gate = new();
+    private readonly CancellationTokenSource _disposeCts = new();
 
     private IDalamudTextureWrap _placeholderTexture;
     private bool _disposed;
@@ -50,7 +53,7 @@ public sealed class VenueBannerCache : IVenueBannerCache, IDisposable
 
             if (!_pendingRequests.ContainsKey(requestUri))
             {
-                _pendingRequests[requestUri] = FetchBannerAsync(requestUri);
+                _pendingRequests[requestUri] = FetchBannerAsync(requestUri, _disposeCts.Token);
             }
         }
 
@@ -65,6 +68,7 @@ public sealed class VenueBannerCache : IVenueBannerCache, IDisposable
         }
 
         _disposed = true;
+        _disposeCts.Cancel();
 
         lock (_gate)
         {
@@ -78,13 +82,14 @@ public sealed class VenueBannerCache : IVenueBannerCache, IDisposable
         }
 
         _placeholderTexture.Dispose();
+        _disposeCts.Dispose();
     }
 
-    private async Task FetchBannerAsync(string requestUri)
+    private async Task FetchBannerAsync(string requestUri, CancellationToken cancellationToken)
     {
         try
         {
-            using var response = await _httpClient.GetAsync(requestUri).ConfigureAwait(false);
+            using var response = await _httpClient.GetAsync(requestUri, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 lock (_gate)
@@ -95,11 +100,17 @@ public sealed class VenueBannerCache : IVenueBannerCache, IDisposable
                 return;
             }
 
-            var bytes = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+            var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
             var texture = await _textureProvider.CreateFromImageAsync(bytes, $"FFXIVVenues.Banner.{requestUri}").ConfigureAwait(false);
 
             lock (_gate)
             {
+                if (_disposed || cancellationToken.IsCancellationRequested)
+                {
+                    texture.Dispose();
+                    return;
+                }
+
                 if (_bannerByUri.TryGetValue(requestUri, out var existing))
                 {
                     existing?.Dispose();
@@ -108,10 +119,18 @@ public sealed class VenueBannerCache : IVenueBannerCache, IDisposable
                 _bannerByUri[requestUri] = texture;
             }
         }
+        catch (OperationCanceledException)
+        {
+        }
         catch
         {
             lock (_gate)
             {
+                if (_disposed || cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+
                 _bannerByUri[requestUri] = null;
             }
         }

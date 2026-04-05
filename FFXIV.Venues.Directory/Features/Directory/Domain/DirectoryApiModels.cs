@@ -137,11 +137,12 @@ internal sealed class DirectoryTime
 
 internal enum DirectoryDay
 {
-    Sunday,
-    Monday,
-    Tuesday,
-    Wednesday,
-    Thursday,
-    Friday,
-    Saturday,
+    // The directory API serializes weekdays as Monday=0 through Sunday=6.
+    Monday = 0,
+    Tuesday = 1,
+    Wednesday = 2,
+    Thursday = 3,
+    Friday = 4,
+    Saturday = 5,
+    Sunday = 6,
 }

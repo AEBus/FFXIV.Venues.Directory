@@ -6,7 +6,7 @@ using FFXIV.Venues.Directory.Infrastructure.Ui;
 
 namespace FFXIV.Venues.Directory.Features.Directory.Commands;
 
-[CommandBinding("/ffxivvenues", "Open venues directory")]
+[CommandBinding("/ffxivvenues", "Open the venue directory")]
 internal sealed class OpenDirectoryCommand : ICommandAction
 {
     private readonly WindowRegistry _windowBroker;
@@ -20,7 +20,7 @@ internal sealed class OpenDirectoryCommand : ICommandAction
     {
         if (!string.IsNullOrWhiteSpace(args))
         {
-            DalamudServices.ChatGui.PrintError("Unknown argument. Use /ffxivvenues.");
+            DalamudServices.ChatGui.PrintError("This command does not take arguments. Use /ffxivvenues.");
             return Task.CompletedTask;
         }
 
