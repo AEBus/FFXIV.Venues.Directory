@@ -1,4 +1,4 @@
-﻿name: Create Release
+name: Create Release
 
 on:
   push:
@@ -38,17 +38,9 @@ jobs:
           $ver = '${{ github.ref_name }}' -replace '^v'
           dotnet build FFXIV.Venues.Directory.sln --no-restore --configuration Release --nologo -p:Platform=x64 -p:Version=$ver -p:FileVersion=$ver -p:AssemblyVersion=$ver
 
-      - name: Write version into plugin json
-        shell: pwsh
-        run: |
-          $ver = '${{ github.ref_name }}' -replace '^v'
-          $path = './FFXIV.Venues.Directory/bin/x64/Release/FFXIV.Venues.Directory.json'
-          $json = Get-Content -Raw $path | ConvertFrom-Json
-          $json.AssemblyVersion = $ver
-          $json | ConvertTo-Json -Depth 10 | Set-Content -Path $path -Encoding utf8
-
       - name: Archive
-        run: Compress-Archive -Path "FFXIV.Venues.Directory/bin/x64/Release/*" -DestinationPath FFXIV.Venues.Directory.zip
+        shell: pwsh
+        run: Copy-Item -LiteralPath "FFXIV.Venues.Directory/bin/x64/Release/FFXIV.Venues.Directory/latest.zip" -Destination "FFXIV.Venues.Directory.zip" -Force
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -62,4 +54,3 @@ jobs:
           name: FFXIV Venues Directory ${{ github.ref_name }}
           files: ./FFXIV.Venues.Directory.zip
           prerelease: false
-

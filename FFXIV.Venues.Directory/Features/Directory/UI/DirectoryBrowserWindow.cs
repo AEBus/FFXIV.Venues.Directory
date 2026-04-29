@@ -27,7 +27,7 @@ using TimeZoneConverter;
 
 namespace FFXIV.Venues.Directory.Features.Directory.Ui;
 
-internal sealed partial class DirectoryBrowserWindow : Window
+internal sealed partial class DirectoryBrowserWindow : Window, IDisposable
 {
     private enum PostPreparationActivationStage
     {
@@ -239,6 +239,7 @@ internal sealed partial class DirectoryBrowserWindow : Window
     private readonly Configuration _configuration;
     private readonly LifestreamNavigator _lifestreamIpc;
     private readonly PlotSizeLookup _housingPlotSizeResolver;
+    private readonly CancellationTokenSource _disposeCts = new();
 
     private Task<DirectoryVenue[]?>? _venuesTask;
     private Task<PreparedVenue[]>? _preparedVenuesTask;
@@ -292,6 +293,7 @@ internal sealed partial class DirectoryBrowserWindow : Window
     private bool _sortedVenueRowMetricsDirty = true;
     private readonly Dictionary<string, int> _selectedRouteIndices = new(StringComparer.Ordinal);
     private PostPreparationActivationStage _postPreparationActivationStage;
+    private bool _disposed;
 
     public DirectoryBrowserWindow(
         HttpClient httpClient,
@@ -319,8 +321,29 @@ internal sealed partial class DirectoryBrowserWindow : Window
         };
     }
 
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        _disposeCts.Cancel();
+        _venuesTask = null;
+        _preparedVenuesTask = null;
+        _preparedVenueDetailTasks.Clear();
+        _preparedVenueScheduleTasks.Clear();
+        _disposeCts.Dispose();
+    }
+
     public override void Draw()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         var activationStage = _postPreparationActivationStage;
         try
         {
@@ -622,8 +645,13 @@ internal sealed partial class DirectoryBrowserWindow : Window
 
     private void TriggerRefresh()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         _venueRefreshVersion++;
-        _venuesTask = _httpClient.GetFromJsonAsync<DirectoryVenue[]>("venue?approved=true");
+        _venuesTask = _httpClient.GetFromJsonAsync<DirectoryVenue[]>("venue?approved=true", _disposeCts.Token);
         _preparedVenuesTask = null;
         _loadError = null;
         _venues = null;
@@ -644,6 +672,12 @@ internal sealed partial class DirectoryBrowserWindow : Window
     {
         if (_venuesTask == null || !_venuesTask.IsCompleted)
         {
+            return;
+        }
+
+        if (_venuesTask.IsCanceled)
+        {
+            _venuesTask = null;
             return;
         }
 
@@ -676,9 +710,16 @@ internal sealed partial class DirectoryBrowserWindow : Window
         var refreshVersion = _venueRefreshVersion;
         _preparedVenueTaskVersion = refreshVersion;
         _preparedVenueTaskStartedAtUtc = DateTimeOffset.UtcNow;
+        var cancellationToken = _disposeCts.Token;
         _preparedVenuesTask = Task.Factory.StartNew(
-            () => BuildPreparedVenues(venues),
-            CancellationToken.None,
+            () =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var prepared = BuildPreparedVenues(venues);
+                cancellationToken.ThrowIfCancellationRequested();
+                return prepared;
+            },
+            cancellationToken,
             TaskCreationOptions.DenyChildAttach | TaskCreationOptions.LongRunning,
             TaskScheduler.Default);
     }
@@ -705,6 +746,13 @@ internal sealed partial class DirectoryBrowserWindow : Window
                 return true;
             }
 
+            return false;
+        }
+
+        if (_preparedVenuesTask.IsCanceled)
+        {
+            _preparedVenuesTask = null;
+            _preparedVenueTaskStartedAtUtc = default;
             return false;
         }
 
@@ -860,9 +908,11 @@ internal sealed partial class DirectoryBrowserWindow : Window
             return;
         }
 
+        var cancellationToken = _disposeCts.Token;
         _preparedVenueDetailTasks[venue.Id] = Task.Factory.StartNew(
             () =>
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
                     Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
@@ -872,9 +922,11 @@ internal sealed partial class DirectoryBrowserWindow : Window
                     // Best effort only; some hosts may reject thread priority changes.
                 }
 
-                return BuildPreparedVenueDetails(venue);
+                var details = BuildPreparedVenueDetails(venue);
+                cancellationToken.ThrowIfCancellationRequested();
+                return details;
             },
-            CancellationToken.None,
+            cancellationToken,
             TaskCreationOptions.DenyChildAttach | TaskCreationOptions.LongRunning,
             TaskScheduler.Default);
     }
@@ -886,9 +938,11 @@ internal sealed partial class DirectoryBrowserWindow : Window
             return;
         }
 
+        var cancellationToken = _disposeCts.Token;
         _preparedVenueScheduleTasks[venue.Id] = Task.Factory.StartNew(
             () =>
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
                     Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
@@ -898,9 +952,11 @@ internal sealed partial class DirectoryBrowserWindow : Window
                     // Best effort only; some hosts may reject thread priority changes.
                 }
 
-                return BuildPreparedScheduleRows(venue.Source.Schedule);
+                var rows = BuildPreparedScheduleRows(venue.Source.Schedule);
+                cancellationToken.ThrowIfCancellationRequested();
+                return rows;
             },
-            CancellationToken.None,
+            cancellationToken,
             TaskCreationOptions.DenyChildAttach | TaskCreationOptions.LongRunning,
             TaskScheduler.Default);
     }

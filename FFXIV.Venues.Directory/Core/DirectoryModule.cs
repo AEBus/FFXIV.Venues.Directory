@@ -56,6 +56,7 @@ public sealed class DirectoryPlugin : IDalamudPlugin
         serviceCollection.AddSingleton<IUiBuilder>(_ => pluginInterface.UiBuilder);
         serviceCollection.AddSingleton(DalamudServices.CommandManager);
         serviceCollection.AddSingleton(DalamudServices.ChatGui);
+        serviceCollection.AddSingleton(DalamudServices.PluginLog);
         serviceCollection.AddSingleton(DalamudServices.DataManager);
         serviceCollection.AddSingleton(DalamudServices.TextureProvider);
 

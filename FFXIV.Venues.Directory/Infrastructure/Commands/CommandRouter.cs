@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
+using System.Threading.Tasks;
 using Dalamud.Game.Command;
 using Dalamud.Plugin.Services;
 using FFXIV.Venues.Directory.Infrastructure.Composition;
@@ -12,12 +13,14 @@ namespace FFXIV.Venues.Directory.Infrastructure.Commands;
 internal sealed class CommandRouter : IDisposable
 {
     private readonly ICommandManager _commandManager;
+    private readonly IPluginLog _pluginLog;
     private readonly HandlerRegistry<ICommandAction> _handlers;
     private readonly HashSet<string> _registeredCommands = new(StringComparer.OrdinalIgnoreCase);
 
-    public CommandRouter(IServiceProvider serviceProvider, ICommandManager commandManager)
+    public CommandRouter(IServiceProvider serviceProvider, ICommandManager commandManager, IPluginLog pluginLog)
     {
         _commandManager = commandManager;
+        _pluginLog = pluginLog;
         _handlers = new HandlerRegistry<ICommandAction>(serviceProvider);
     }
 
@@ -73,6 +76,24 @@ internal sealed class CommandRouter : IDisposable
         }
 
         SynchronizationContext.SetSynchronizationContext(new SynchronizationContext());
-        _handlers.Activate(command)?.Handle(arguments);
+        var task = _handlers.Activate(command)?.Handle(arguments);
+        if (task == null || task.IsCompletedSuccessfully)
+        {
+            return;
+        }
+
+        _ = ObserveCommandTaskAsync(command, task);
+    }
+
+    private async Task ObserveCommandTaskAsync(string command, Task task)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _pluginLog.Error(ex, "Command {Command} failed.", command);
+        }
     }
 }

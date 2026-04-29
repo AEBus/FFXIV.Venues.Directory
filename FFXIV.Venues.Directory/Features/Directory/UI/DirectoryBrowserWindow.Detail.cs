@@ -46,6 +46,11 @@ internal sealed partial class DirectoryBrowserWindow
                 ImGui.Image(banner.Handle, size);
                 bannerDrawn = true;
             }
+            else if (_venueService.IsVenueBannerLoading(venue.Id, venue.Source.BannerUri))
+            {
+                DrawMutedText("Loading banner...");
+                bannerDrawn = true;
+            }
         }
 
         PreparedVenueDetails details = default!;

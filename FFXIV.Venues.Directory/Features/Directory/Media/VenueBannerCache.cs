@@ -1,23 +1,15 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Net.Http;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Dalamud.Interface.Textures.TextureWraps;
-using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
-using FFXIV.Venues.Directory.Infrastructure;
 
 namespace FFXIV.Venues.Directory.Features.Directory.Media;
 
 public sealed class VenueBannerCache : IVenueBannerCache, IDisposable
 {
-    private static readonly byte[] TransparentFallbackPng = Convert.FromBase64String(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/w8AAgMBAp+N7WAAAAAASUVORK5CYII=");
-
-    private readonly IDalamudPluginInterface _pluginInterface;
     private readonly HttpClient _httpClient;
     private readonly ITextureProvider _textureProvider;
     private readonly Dictionary<string, IDalamudTextureWrap?> _bannerByUri = new(StringComparer.OrdinalIgnoreCase);
@@ -25,15 +17,12 @@ public sealed class VenueBannerCache : IVenueBannerCache, IDisposable
     private readonly object _gate = new();
     private readonly CancellationTokenSource _disposeCts = new();
 
-    private IDalamudTextureWrap _placeholderTexture;
     private bool _disposed;
 
-    public VenueBannerCache(IDalamudPluginInterface pluginInterface, HttpClient httpClient, ITextureProvider textureProvider)
+    public VenueBannerCache(HttpClient httpClient, ITextureProvider textureProvider)
     {
-        _pluginInterface = pluginInterface;
         _httpClient = httpClient;
         _textureProvider = textureProvider;
-        _placeholderTexture = LoadPlaceholderTexture();
     }
 
     public IDalamudTextureWrap? GetVenueBanner(string venueId, Uri? bannerUri)
@@ -55,9 +44,22 @@ public sealed class VenueBannerCache : IVenueBannerCache, IDisposable
             {
                 _pendingRequests[requestUri] = FetchBannerAsync(requestUri, _disposeCts.Token);
             }
+
+            return null;
+        }
+    }
+
+    public bool IsVenueBannerLoading(string venueId, Uri? bannerUri)
+    {
+        if (_disposed)
+        {
+            return false;
         }
 
-        return _placeholderTexture;
+        lock (_gate)
+        {
+            return _pendingRequests.ContainsKey(BuildRequestUri(venueId, bannerUri));
+        }
     }
 
     public void Dispose()
@@ -81,7 +83,6 @@ public sealed class VenueBannerCache : IVenueBannerCache, IDisposable
             _pendingRequests.Clear();
         }
 
-        _placeholderTexture.Dispose();
         _disposeCts.Dispose();
     }
 
@@ -143,55 +144,6 @@ public sealed class VenueBannerCache : IVenueBannerCache, IDisposable
         }
     }
 
-    private IDalamudTextureWrap LoadPlaceholderTexture()
-    {
-        foreach (var path in EnumeratePlaceholderCandidates())
-        {
-            if (!File.Exists(path))
-            {
-                continue;
-            }
-
-            return LoadTexture(File.ReadAllBytes(path), $"FFXIVVenues.Loading.{Path.GetFileName(path)}");
-        }
-
-        var assembly = Assembly.GetExecutingAssembly();
-        foreach (var resourceName in assembly.GetManifestResourceNames())
-        {
-            if (!resourceName.EndsWith("loading.png", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            using var stream = assembly.GetManifestResourceStream(resourceName);
-            if (stream == null)
-            {
-                continue;
-            }
-
-            using var buffer = new MemoryStream();
-            stream.CopyTo(buffer);
-            return LoadTexture(buffer.ToArray(), "FFXIVVenues.Loading.Embedded");
-        }
-
-        return LoadTexture(TransparentFallbackPng, "FFXIVVenues.Loading.Fallback");
-    }
-
-    private IEnumerable<string> EnumeratePlaceholderCandidates()
-    {
-        var assemblyDir = _pluginInterface.AssemblyLocation.Directory?.FullName;
-        if (string.IsNullOrWhiteSpace(assemblyDir))
-        {
-            yield break;
-        }
-
-        yield return Path.Combine(assemblyDir, "Assets", "loading.png");
-        yield return Path.Combine(assemblyDir, "loading.png");
-    }
-
-    private IDalamudTextureWrap LoadTexture(byte[] imageBytes, string debugName) =>
-        _textureProvider.CreateFromImageAsync(imageBytes, debugName).GetAwaiter().GetResult();
-
     private static string BuildRequestUri(string venueId, Uri? bannerUri)
     {
         if (bannerUri != null)
@@ -206,4 +158,6 @@ public sealed class VenueBannerCache : IVenueBannerCache, IDisposable
 public interface IVenueBannerCache
 {
     IDalamudTextureWrap? GetVenueBanner(string venueId, Uri? bannerUri);
+
+    bool IsVenueBannerLoading(string venueId, Uri? bannerUri);
 }

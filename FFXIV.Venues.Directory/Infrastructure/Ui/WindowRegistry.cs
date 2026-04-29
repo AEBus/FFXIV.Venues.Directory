@@ -50,6 +50,14 @@ internal sealed class WindowRegistry : IDisposable
         _disposed = true;
         _uiBuilder.Draw -= OnDraw;
         _windowSystem.RemoveAllWindows();
+        foreach (var window in _instances.Values)
+        {
+            if (window is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
+        }
+
         _instances.Clear();
     }
 
