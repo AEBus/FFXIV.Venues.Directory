@@ -1,4 +1,6 @@
 using System;
+using System.IO;
+using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
@@ -7,6 +9,7 @@ using Dalamud.Interface.Windowing;
 using FFXIV.Venues.Directory.Features.Directory.Text;
 using FFXIV.Venues.Directory.Infrastructure;
 using FFXIV.Venues.Directory.Infrastructure.Net;
+using FFXIV.Venues.Directory.Infrastructure.RichText;
 using FFXIV.Venues.Directory.Infrastructure.Ui;
 using static FFXIV.Venues.Directory.Features.Directory.Text.DirectoryTime;
 
@@ -278,6 +281,36 @@ internal sealed partial class DirectoryBrowserWindow
             DrawVerticalRhythm(0.25f);
             DrawTextWrapped("Pictures in descriptions load from the sites they are on. What the plugin loads stays in memory; only your settings, favorites and marks are saved.", UiStyle.BodyMutedText);
         });
+
+        DrawSection("ChangelogCard", "Changelog", () =>
+        {
+            _changelogView ??= new RichTextView(_remoteImages, () => false, () => false);
+            _changelogView.Draw(GetChangelog(), RichTextVersion, FormatRichTime, DescribeRichTime, RichTextColors);
+        });
+    }
+
+    private RichTextView? _changelogView;
+    private RichDocument? _changelog;
+    private int _changelogVersion = -1;
+
+    // Returns the changelog embedded from the repository's CHANGELOG.md, without its title, prepared like a venue description; empty when the resource is missing.
+    private RichDocument GetChangelog()
+    {
+        if (_changelog != null && _changelogVersion == RichTextVersion)
+        {
+            return _changelog;
+        }
+
+        _changelogVersion = RichTextVersion;
+        using var stream = typeof(DirectoryBrowserWindow).Assembly.GetManifestResourceStream("CHANGELOG.md");
+        if (stream == null)
+        {
+            return _changelog = RichDocument.Empty;
+        }
+
+        using var reader = new StreamReader(stream);
+        var lines = reader.ReadToEnd().Replace("\r\n", "\n").Split('\n').Where(line => !line.StartsWith("# ", StringComparison.Ordinal));
+        return _changelog = VenueText.PrepareVenueDescription(lines);
     }
 
     // A source of the directory's data: its name as a link to its site, and what comes from it.
