@@ -134,7 +134,7 @@ internal sealed class PlotSizeLookup
 
     private static bool TryReadDistrictPlotSizes(RawRow row, out HousingPlotSize[] sizes)
     {
-        sizes = Array.Empty<HousingPlotSize>();
+        sizes = [];
 
         if (row.Columns.Count < DistrictPlotCount)
         {

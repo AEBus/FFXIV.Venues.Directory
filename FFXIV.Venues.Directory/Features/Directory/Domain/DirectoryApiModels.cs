@@ -28,6 +28,12 @@ internal sealed class DirectoryVenue
     [JsonPropertyName("schedule")]
     public List<DirectorySchedule>? Schedule { get; set; }
 
+    [JsonPropertyName("scheduleOverrides")]
+    public List<DirectoryScheduleOverride>? ScheduleOverrides { get; set; }
+
+    [JsonPropertyName("notices")]
+    public List<DirectoryNotice>? Notices { get; set; }
+
     [JsonPropertyName("sfw")]
     public bool Sfw { get; set; }
 
@@ -46,6 +52,14 @@ internal sealed class DirectoryVenue
         get => BannerUri;
         set => BannerUri = value;
     }
+
+    // Openings known from elsewhere than the API: the events of a venue only listed on Partake.
+    [JsonIgnore]
+    public IReadOnlyList<VenueOpening>? KnownOpenings { get; set; }
+
+    // When the Party Finder ad of a venue known only from its events and ads went up and when it expires; no opening, as an ad tells nothing of the hours.
+    [JsonIgnore]
+    public VenueOpening? Advertisement { get; set; }
 }
 
 internal sealed class DirectoryLocation
@@ -111,6 +125,40 @@ internal sealed class DirectorySchedule
     public DirectoryResolution? Resolution { get; set; }
 }
 
+// A one-off opening or closure that amends the regular schedule. Dates are nullable so one malformed entry cannot fail the whole venue list.
+internal sealed class DirectoryScheduleOverride
+{
+    [JsonPropertyName("open")]
+    public bool Open { get; set; }
+
+    [JsonPropertyName("start")]
+    public DateTimeOffset? Start { get; set; }
+
+    [JsonPropertyName("end")]
+    public DateTimeOffset? End { get; set; }
+}
+
+internal sealed class DirectoryNotice
+{
+    [JsonPropertyName("start")]
+    public DateTimeOffset? Start { get; set; }
+
+    [JsonPropertyName("end")]
+    public DateTimeOffset? End { get; set; }
+
+    // 0 = information, 1 = warning, 2 = critical.
+    [JsonPropertyName("type")]
+    public JsonElement Type { get; set; }
+
+    [JsonPropertyName("message")]
+    public string? Message { get; set; }
+
+    [JsonIgnore]
+    public bool IsWarning => Type.ValueKind == JsonValueKind.Number
+        ? Type.TryGetInt32(out var value) && value > 0
+        : Type.ValueKind == JsonValueKind.String && !string.Equals(Type.GetString(), "Information", StringComparison.OrdinalIgnoreCase);
+}
+
 internal sealed class DirectoryInterval
 {
     [JsonPropertyName("intervalType")]
@@ -118,6 +166,32 @@ internal sealed class DirectoryInterval
 
     [JsonPropertyName("intervalArgument")]
     public JsonElement IntervalArgument { get; set; }
+
+    // The API sends numbers; names are accepted too so a serializer change cannot break the whole venue list.
+    [JsonIgnore]
+    public DirectoryIntervalType Type => IntervalType.ValueKind switch
+    {
+        JsonValueKind.Number when IntervalType.TryGetInt32(out var value) => (DirectoryIntervalType)value,
+        JsonValueKind.String when Enum.TryParse<DirectoryIntervalType>(IntervalType.GetString(), out var value) => value,
+        _ => DirectoryIntervalType.Unknown,
+    };
+
+    [JsonIgnore]
+    public int Argument => IntervalArgument.ValueKind switch
+    {
+        JsonValueKind.Number when IntervalArgument.TryGetInt32(out var value) => value,
+        JsonValueKind.String when int.TryParse(IntervalArgument.GetString(), out var value) => value,
+        _ => 1,
+    };
+}
+
+internal enum DirectoryIntervalType
+{
+    Unknown = -1,
+    EveryXWeeks = 0,
+
+    // The argument picks the weekday occurrence in the month; negative values count from the end (-1 = last).
+    EveryXthDayOfTheMonth = 1,
 }
 
 internal sealed class DirectoryTime
