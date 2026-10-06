@@ -39,6 +39,7 @@ internal sealed partial class DirectoryBrowserWindow : Window, IDisposable
     private const float MinListWidth = 640f;
     private const float MinDetailWidth = 360f;
     private const float FilterSidebarFixedWidth = 352f;
+    private static readonly Vector2 DefaultWindowSize = new(1280f, 720f);
     private static readonly Vector2 MinWindowSize = new(1020f, 600f);
     private static readonly TimeSpan PreparedVenueBuildTimeout = TimeSpan.FromSeconds(5);
     private static readonly Vector4 DefaultSectionBackground = PluginTheme.Surface;
@@ -141,7 +142,7 @@ internal sealed partial class DirectoryBrowserWindow : Window, IDisposable
         EnsurePreferenceCollectionsInitialized();
         SyncPreferredVenueLookups();
 
-        Size = new Vector2(1280f, 720f);
+        Size = DefaultWindowSize;
         SizeCondition = ImGuiCond.FirstUseEver;
         Flags = ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse;
         SizeConstraints = new WindowSizeConstraints
@@ -153,7 +154,7 @@ internal sealed partial class DirectoryBrowserWindow : Window, IDisposable
     }
 
     private IDisposable? _theme;
-    private float _appliedScaleFactor = -1f;
+    private Vector2 _appliedMinimumSize;
     private int _fontVersion = -1;
     private (DirectoryMode Mode, string? VenueId, int? EventId) _detailScrollKey;
 
@@ -175,13 +176,15 @@ internal sealed partial class DirectoryBrowserWindow : Window, IDisposable
     // The plugin's colors for this window and everything it opens (popups, tooltips), unless the user prefers their Dalamud style.
     public override void PreDraw()
     {
-        // The minimum size grows with the interface size, so the list and the details always fit side by side.
-        if (_appliedScaleFactor != UiScale.Factor)
+        // The minimum size grows with the interface size, so the list and the details fit side by side, but never beyond the game window; the first size stays within it too.
+        var minimumSize = UiScale.FitToScreen(MinWindowSize * UiScale.Factor);
+        if (_appliedMinimumSize != minimumSize)
         {
-            _appliedScaleFactor = UiScale.Factor;
+            _appliedMinimumSize = minimumSize;
+            Size = UiScale.FitToScreen(DefaultWindowSize);
             SizeConstraints = new WindowSizeConstraints
             {
-                MinimumSize = MinWindowSize * UiScale.Factor,
+                MinimumSize = minimumSize,
                 MaximumSize = new Vector2(float.MaxValue, float.MaxValue),
             };
         }
@@ -414,7 +417,7 @@ internal sealed partial class DirectoryBrowserWindow : Window, IDisposable
         var minDetail = Scale(MinDetailWidth);
         if (contentWidth <= minList + minDetail)
         {
-            // Narrower than the minimum window size allows, which happens briefly after a UI scale change.
+            // Narrower than the list and the details need: briefly after a UI scale change, or on a screen too small for the minimum window size.
             var list = contentWidth * minList / (minList + minDetail);
             return (list, contentWidth - list);
         }

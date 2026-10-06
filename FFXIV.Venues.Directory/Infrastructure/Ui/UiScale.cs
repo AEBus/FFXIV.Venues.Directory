@@ -23,4 +23,11 @@ internal static class UiScale
     public static float Of(float value) => value * Total;
 
     public static Vector2 Vector(float x, float y) => new(x * Total, y * Total);
+
+    // Returns a window size, in the units Dalamud's Window takes (it multiplies them by the global scale), no larger than the game window, so a large UI scale on a small screen cannot push a window off the screen.
+    public static Vector2 FitToScreen(Vector2 size) => FitToScreen(size, ImGuiHelpers.MainViewport.Size, ImGuiHelpers.GlobalScale);
+
+    // screen: the game window in pixels; globalScale: Dalamud's global scale. A size is returned unchanged until both are known.
+    internal static Vector2 FitToScreen(Vector2 size, Vector2 screen, float globalScale) =>
+        screen.X <= 0f || screen.Y <= 0f || globalScale <= 0f ? size : Vector2.Min(size, screen / globalScale);
 }

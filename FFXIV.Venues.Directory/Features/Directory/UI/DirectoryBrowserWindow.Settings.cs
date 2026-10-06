@@ -420,7 +420,7 @@ internal sealed partial class DirectoryBrowserWindow
     {
         private readonly DirectoryBrowserWindow _directory;
         private IDisposable? _theme;
-        private float _appliedScaleFactor = -1f;
+        private Vector2 _appliedMinimumSize;
 
         public SettingsWindow(DirectoryBrowserWindow directory)
             : base("FFXIV Venues Directory Settings###VenuesDirectorySettings", ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)
@@ -435,12 +435,15 @@ internal sealed partial class DirectoryBrowserWindow
 
         public override void PreDraw()
         {
-            if (_appliedScaleFactor != UiScale.Factor)
+            // As for the directory: the minimum size follows the interface size but stays within the game window.
+            var minimumSize = UiScale.FitToScreen(SettingsMinSize * UiScale.Factor);
+            if (_appliedMinimumSize != minimumSize)
             {
-                _appliedScaleFactor = UiScale.Factor;
+                _appliedMinimumSize = minimumSize;
+                Size = UiScale.FitToScreen(SettingsDefaultSize);
                 SizeConstraints = new WindowSizeConstraints
                 {
-                    MinimumSize = SettingsMinSize * UiScale.Factor,
+                    MinimumSize = minimumSize,
                     MaximumSize = new Vector2(float.MaxValue, float.MaxValue),
                 };
             }
