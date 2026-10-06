@@ -2,8 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
-using Dalamud.Interface.Colors;
+using Dalamud.Interface;
 using Dalamud.Interface.Utility.Raii;
+using FFXIV.Venues.Directory.Features.Directory.Catalog;
+using FFXIV.Venues.Directory.Features.Directory.Filters;
+using FFXIV.Venues.Directory.Features.Events;
+using FFXIV.Venues.Directory.Infrastructure.Ui;
+using static FFXIV.Venues.Directory.Features.Directory.Text.DirectoryTime;
 
 namespace FFXIV.Venues.Directory.Features.Directory.Ui;
 
@@ -17,17 +22,13 @@ internal sealed partial class DirectoryBrowserWindow
             return;
         }
 
-        var isNarrowLayout = _wasNarrowLayoutLastDraw;
-        var wideStatusColumnWidth = MathF.Max(
-            UiStyle.ListStatusColumnWidth,
-            ImGui.CalcTextSize("Open until 00:00").X + UiStyle.ListStatusColumnTextReserve);
         var flags = ImGuiTableFlags.BordersInner | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY |
-                    (isNarrowLayout ? ImGuiTableFlags.SizingFixedFit : ImGuiTableFlags.SizingStretchProp) |
+                    ImGuiTableFlags.SizingStretchProp |
                     ImGuiTableFlags.Sortable |
                     ImGuiTableFlags.NoSavedSettings;
         var size = ImGui.GetContentRegionAvail();
-        var venueWrapWidth = 0f;
-        var addressWrapWidth = 0f;
+        float venueWrapWidth;
+        float addressWrapWidth;
         using var tableColors = ImRaii.PushColor(ImGuiCol.TableHeaderBg, UiStyle.ListHeaderBackground)
             .Push(ImGuiCol.TableRowBgAlt, UiStyle.ListAlternateRowBackground);
         using var tableCellPadding = ImRaii.PushStyle(
@@ -41,27 +42,25 @@ internal sealed partial class DirectoryBrowserWindow
             }
 
             ImGui.TableSetupScrollFreeze(0, 1);
-            ImGui.TableSetupColumn(
-                "Venue",
-                (isNarrowLayout ? ImGuiTableColumnFlags.WidthFixed : ImGuiTableColumnFlags.WidthStretch) | ImGuiTableColumnFlags.DefaultSort,
-                isNarrowLayout ? UiStyle.ListNarrowVenueColumnWidth : UiStyle.ListVenueColumnWeight);
-            ImGui.TableSetupColumn(
-                "Address",
-                ImGuiTableColumnFlags.WidthFixed,
-                isNarrowLayout ? UiStyle.ListNarrowAddressColumnWidth : UiStyle.ListAddressColumnWidth);
-            ImGui.TableSetupColumn("Size", ImGuiTableColumnFlags.WidthFixed, UiStyle.ListSizeColumnWidth);
+            ImGui.TableSetupColumn("Venue", ImGuiTableColumnFlags.WidthStretch, UiStyle.ListVenueColumnWeight);
+            ImGui.TableSetupColumn("Location", ImGuiTableColumnFlags.WidthStretch, UiStyle.ListAddressColumnWeight);
+            // Wide enough for its header at any font size (glyphs do not grow exactly with the scale).
+            ImGui.TableSetupColumn("Size", ImGuiTableColumnFlags.WidthFixed, MathF.Max(UiStyle.ListSizeColumnWidth, ImGui.CalcTextSize("Size").X + Scale(4f)));
             ImGui.TableSetupColumn(
                 "Status",
-                ImGuiTableColumnFlags.WidthFixed,
-                isNarrowLayout ? UiStyle.ListNarrowStatusColumnWidth : wideStatusColumnWidth);
+                ImGuiTableColumnFlags.WidthFixed | ImGuiTableColumnFlags.DefaultSort,
+                MeasureStatusColumnWidth());
             using (ImRaii.PushColor(ImGuiCol.Text, UiStyle.ListHeaderText))
             {
+                // The wrap widths of the venue and location cells, measured here while in their columns.
                 ImGui.TableNextRow(ImGuiTableRowFlags.Headers);
-                ImGui.TableSetColumnIndex(0);
+                ImGui.TableNextColumn();
+                venueWrapWidth = MathF.Max(1f, ImGui.GetColumnWidth() - ImGui.GetStyle().CellPadding.X * 2f - UiStyle.ListMarkerReserve);
                 ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Scale(12f));
                 ImGui.TableHeader("Venue");
                 ImGui.TableNextColumn();
-                ImGui.TableHeader("Address");
+                addressWrapWidth = MathF.Max(1f, ImGui.GetColumnWidth() - ImGui.GetStyle().CellPadding.X * 2f);
+                ImGui.TableHeader("Location");
                 ImGui.TableNextColumn();
                 ImGui.TableHeader("Size");
                 ImGui.TableNextColumn();
@@ -74,15 +73,6 @@ internal sealed partial class DirectoryBrowserWindow
                 return;
             }
 
-            ImGui.TableSetColumnIndex(0);
-            venueWrapWidth = isNarrowLayout
-                ? MathF.Max(1f, UiStyle.ListNarrowVenueColumnWidth - ImGui.GetStyle().CellPadding.X * 2f)
-                : MathF.Max(1f, ImGui.GetColumnWidth() - ImGui.GetStyle().CellPadding.X * 2f);
-            ImGui.TableNextColumn();
-            var addressColumnWidth = isNarrowLayout
-                ? MathF.Max(1f, UiStyle.ListNarrowAddressColumnWidth - ImGui.GetStyle().CellPadding.X * 2f)
-                : MathF.Max(1f, ImGui.GetColumnWidth() - ImGui.GetStyle().CellPadding.X * 2f);
-            addressWrapWidth = MathF.Max(1f, addressColumnWidth);
             EnsureSortedVenueRowMetrics(venueWrapWidth, addressWrapWidth);
 
             var scrollY = ImGui.GetScrollY();
@@ -111,22 +101,24 @@ internal sealed partial class DirectoryBrowserWindow
 
     private string GetEmptySelectionMessage()
     {
-        if (_favoritesOnly && _visitedOnly)
+        if (_filters.HiddenOnly && _hiddenVenueIds.Count == 0)
         {
-            return "You have no favorite or visited venues yet. Add or mark some first.";
+            return "You have not hidden any venues.";
         }
 
-        if (_favoritesOnly)
+        if (_filters.FavoritesOnly && _favoriteVenueIds.Count == 0)
         {
-            return "You have no favorite venues yet. Add some first.";
+            return "You have no favorite venues yet. Add some with the star in a venue's details.";
         }
 
-        if (_visitedOnly)
+        if (_filters.Visited == VenueVisitedFilter.Visited && _visitedVenueIds.Count == 0)
         {
-            return "You have no visited venues yet. Mark some first.";
+            return "You have no visited venues yet. Mark some with the check in a venue's details.";
         }
 
-        return "Select a venue from the list to see its details.";
+        return _filteredVenues.Count == 0
+            ? "No venues match the current filters."
+            : "Select a venue from the list to see its details.";
     }
 
     private void EnsureSortedVenueRowMetrics(float venueWrapWidth, float addressWrapWidth)
@@ -150,8 +142,17 @@ internal sealed partial class DirectoryBrowserWindow
         var minimumRowHeight = UiStyle.MinimumRowHeight;
         foreach (var venue in _sortedVenues)
         {
-            var venueHeight = ImGui.CalcTextSize(venue.DisplayName, false, venueWrapWidth).Y;
-            var addressHeight = ImGui.CalcTextSize(venue.TableAddress, false, addressWrapWidth).Y;
+            // Measured once per venue and width: the list is laid out again on every filter or status change.
+            var rowText = GetVenueRowText(venue);
+            if (MathF.Abs(rowText.MeasuredWidth - venueWrapWidth) > 0.5f)
+            {
+                rowText.MeasuredHeight = ImGui.CalcTextSize(venue.DisplayName, false, venueWrapWidth).Y;
+                rowText.MeasuredWidth = venueWrapWidth;
+            }
+
+            var venueHeight = rowText.MeasuredHeight;
+            // The location is one line (cut with an ellipsis, full in the tooltip), so rows keep an even height.
+            var addressHeight = ImGui.GetTextLineHeight();
             var rowHeight = MathF.Max(MathF.Max(venueHeight, addressHeight), minimumRowHeight);
             _sortedVenueRowHeights.Add(rowHeight);
             totalHeight += rowHeight;
@@ -231,7 +232,7 @@ internal sealed partial class DirectoryBrowserWindow
         }
 
         ImGui.TableNextRow(ImGuiTableRowFlags.None, height);
-        ImGui.TableSetColumnIndex(0);
+        ImGui.TableNextColumn();
         ImGui.Dummy(new Vector2(1f, height));
     }
 
@@ -240,7 +241,7 @@ internal sealed partial class DirectoryBrowserWindow
         var isSelected = string.Equals(_selectedVenueId, venue.Id, StringComparison.Ordinal);
 
         ImGui.TableNextRow(ImGuiTableRowFlags.None, rowHeight);
-        ImGui.TableSetColumnIndex(0);
+        ImGui.TableNextColumn();
         using (ImRaii.PushId(rowIndex))
         {
             using var rowHighlight = ImRaii.PushColor(ImGuiCol.Header, UiStyle.SelectedRowBackground)
@@ -249,19 +250,34 @@ internal sealed partial class DirectoryBrowserWindow
             if (ImGui.Selectable("##VenueRow", isSelected, ImGuiSelectableFlags.SpanAllColumns, new Vector2(0f, rowHeight)))
             {
                 _selectedVenueId = venue.Id;
+                _pinnedVenueId = null;
+            }
+
+            if (isSelected)
+            {
+                DrawSelectedRowAccent(ImGui.GetItemRectMin(), ImGui.GetItemRectMax());
             }
 
             var textColor = isSelected
                 ? ResolveTextColorU32(UiStyle.BodyStrongText)
                 : ResolveTextColorU32();
-            var wrapWidth = MathF.Max(1f, ImGui.GetColumnWidth() - ImGui.GetStyle().CellPadding.X * 2f);
-            var textHeight = ImGui.CalcTextSize(venue.DisplayName, false, wrapWidth).Y;
+            var cellWidth = MathF.Max(1f, ImGui.GetColumnWidth() - ImGui.GetStyle().CellPadding.X * 2f);
+            var wrapWidth = MathF.Max(1f, cellWidth - UiStyle.ListMarkerReserve);
+            var rowText = GetVenueRowText(venue);
+            if (MathF.Abs(rowText.NameWidth - wrapWidth) > 0.5f)
+            {
+                rowText.NameLines = WrapTextToWidth(venue.DisplayName, wrapWidth);
+                rowText.NameHeight = ImGui.CalcTextSize(venue.DisplayName, false, wrapWidth).Y;
+                rowText.NameWidth = wrapWidth;
+            }
+
+            var textHeight = rowText.NameHeight;
             var textPos = new Vector2(
                 ImGui.GetItemRectMin().X + Scale(12f),
                 ImGui.GetItemRectMin().Y + MathF.Max(0f, (rowHeight - textHeight) * 0.5f));
             var lineHeight = ImGui.GetTextLineHeight();
             var drawList = ImGui.GetWindowDrawList();
-            var wrappedLines = WrapTextToWidth(venue.DisplayName, wrapWidth);
+            var wrappedLines = rowText.NameLines;
             for (var i = 0; i < wrappedLines.Count; i++)
             {
                 drawList.AddText(
@@ -269,36 +285,58 @@ internal sealed partial class DirectoryBrowserWindow
                     textColor,
                     wrappedLines[i]);
             }
+
+            DrawVenueRowMarkers(venue, textPos.X + cellWidth, ImGui.GetItemRectMin().Y, rowHeight);
+
+            // Right-click on the row (the selectable is still the last item here).
+            DrawVenueRowContextMenu(venue);
         }
 
         ImGui.TableNextColumn();
-        using (ImRaii.PushColor(ImGuiCol.Text, UiStyle.BodyMutedText))
+        var addressWidth = MathF.Max(1f, ImGui.GetColumnWidth() - ImGui.GetStyle().CellPadding.X * 2f);
+        var rowAddress = GetVenueRowText(venue);
+        if (MathF.Abs(rowAddress.AddressWidth - addressWidth) > 0.5f)
         {
-            var addressWidth = MathF.Max(1f, ImGui.GetColumnWidth() - ImGui.GetStyle().CellPadding.X * 2f - Scale(18f));
-            ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + addressWidth);
-            try
-            {
-                ImGui.TextWrapped(venue.TableAddress);
-            }
-            finally
-            {
-                ImGui.PopTextWrapPos();
-            }
+            var addressLines = venue.TableAddress.Split('\n');
+            var address = addressLines.Length > 1 ? $"{addressLines[0]} (+{addressLines.Length - 1})" : venue.TableAddress;
+            rowAddress.Address = FitToWidth(address, addressWidth);
+            rowAddress.AddressWidth = addressWidth;
+        }
+
+        CenterCursorForRow(rowHeight, ImGui.GetTextLineHeight());
+        DrawText(rowAddress.Address, UiStyle.BodyMutedText);
+
+        // The list shows world and plot only; the full address is one hover away.
+        if (ImGui.IsMouseHoveringRect(ImGui.GetItemRectMin(), ImGui.GetItemRectMax()) && ImGui.IsWindowHovered())
+        {
+            ImGui.SetTooltip(venue.DetailedAddress);
         }
         ImGui.TableNextColumn();
-        var badgeWidth = GetSizeBadgeWidth(venue.VenueTypeLabel);
+        var badgeWidth = UiStyle.ListSizeBadgeWidth;
         var available = MathF.Max(0f, ImGui.GetColumnWidth() - ImGui.GetStyle().CellPadding.X * 2f);
         var centeredOffset = MathF.Max(0f, (available - badgeWidth) * 0.5f);
         CenterCursorForRow(rowHeight, UiStyle.BadgeSide);
         ImGui.SetCursorPosX(ImGui.GetCursorPosX() + centeredOffset);
-        DrawSizeBadge(venue.VenueTypeLabel, $"size_{venue.Id}");
+        DrawSizeBadge(venue.VenueTypeLabel, rowAddress.BadgeId);
         ImGui.TableNextColumn();
         CenterCursorForRow(rowHeight, ImGui.GetTextLineHeight());
         DrawVenueStatus(venue);
     }
 
-    private static float GetSizeBadgeWidth(string text) =>
-        UiStyle.ListSizeBadgeWidth;
+    // Wide enough for the longest status line FormatStatusLine produces and for the line of a venue open by a Party Finder ad.
+    private static float MeasureStatusColumnWidth()
+    {
+        var width = 0f;
+        foreach (var sample in Use12HourClock ? StatusColumnSamples12Hour : StatusColumnSamples)
+        {
+            width = MathF.Max(width, ImGui.CalcTextSize(sample).X);
+        }
+
+        return width + UiStyle.ListStatusColumnTextReserve;
+    }
+
+    private static readonly string[] StatusColumnSamples = ["Opens Sep 30 00:00", "Opens May 30 00:00", "Opens in 2 h 59 min", "Open until Wed 00:00", "No opening set", VenueStatus.AdvertisedLine];
+    private static readonly string[] StatusColumnSamples12Hour = ["Opens Sep 30 10:00 PM", "Opens May 30 10:00 PM", "Opens in 2 h 59 min", "Open until Wed 10:00 PM", "No opening set", VenueStatus.AdvertisedLine];
 
     private static List<string> WrapTextToWidth(string text, float wrapWidth)
     {
@@ -332,11 +370,55 @@ internal sealed partial class DirectoryBrowserWindow
         return lines;
     }
 
-    private static void DrawSizeBadge(string text, string idSuffix)
+    private static void DrawSizeBadge(string text, string id)
     {
-        var chipWidth = GetSizeBadgeWidth(text);
+        var chipWidth = UiStyle.ListSizeBadgeWidth;
         var chipSize = new Vector2(chipWidth, UiStyle.BadgeSide);
-        DrawStaticChip($"size_badge_{idSuffix}", text, UiChipTone.Accent, chipSize, centerText: true);
+        DrawStaticChip(id, text, UiChipTone.Accent, chipSize, centerText: true);
+    }
+
+    // What a row of the list draws, worked out once per venue and column width (the countdown once a minute) instead of every frame: wrapping the name and cutting the address measure text many times over.
+    private sealed class VenueRowText
+    {
+        public float NameWidth { get; set; } = -1f;
+
+        public List<string> NameLines { get; set; } = [];
+
+        public float NameHeight { get; set; }
+
+        public float MeasuredWidth { get; set; } = -1f;
+
+        public float MeasuredHeight { get; set; }
+
+        public float AddressWidth { get; set; } = -1f;
+
+        public string Address { get; set; } = string.Empty;
+
+        public string BadgeId { get; init; } = string.Empty;
+
+        public long OpensInMinute { get; set; } = -1;
+
+        public string OpensIn { get; set; } = string.Empty;
+    }
+
+    private readonly Dictionary<PreparedVenue, VenueRowText> _venueRowTexts = new(ReferenceEqualityComparer.Instance);
+    private int _venueRowTextsFontVersion = -1;
+
+    // Measurements belong to a font: another one (interface size, Dalamud's font) starts over. A refreshed list has new venues, so the old ones are let go once there are more than a few lists' worth.
+    private VenueRowText GetVenueRowText(PreparedVenue venue)
+    {
+        if (_venueRowTextsFontVersion != PluginUiFont.Version || _venueRowTexts.Count > 6000)
+        {
+            _venueRowTexts.Clear();
+            _venueRowTextsFontVersion = PluginUiFont.Version;
+        }
+
+        if (!_venueRowTexts.TryGetValue(venue, out var text))
+        {
+            _venueRowTexts[venue] = text = new VenueRowText { BadgeId = $"size_badge_{venue.Id}" };
+        }
+
+        return text;
     }
 
     private static void CenterCursorForRow(float rowHeight, float itemHeight)
@@ -350,11 +432,30 @@ internal sealed partial class DirectoryBrowserWindow
 
     private void DrawVenueStatus(PreparedVenue venue)
     {
-        var color = venue.IsOpen
-            ? UiStyle.PositiveText
-            : string.Equals(venue.StatusLine, "No opening set", StringComparison.OrdinalIgnoreCase)
-                ? UiStyle.BodySubtleText
-                : UiStyle.BodyText;
+        var text = venue.StatusLine;
+        Vector4 color;
+        if (venue.IsOpen)
+        {
+            color = UiStyle.PositiveText;
+        }
+        else if (IsOpeningSoon(venue, DateTimeOffset.Now))
+        {
+            var rowText = GetVenueRowText(venue);
+            var now = DateTimeOffset.UtcNow;
+            var minute = now.ToUnixTimeSeconds() / 60;
+            if (rowText.OpensInMinute != minute)
+            {
+                rowText.OpensIn = FormatOpensIn(venue.Status.Opening!.Value.Start - now);
+                rowText.OpensInMinute = minute;
+            }
+
+            text = rowText.OpensIn;
+            color = UiStyle.SoonText;
+        }
+        else
+        {
+            color = venue.Status.Opening == null ? UiStyle.BodySubtleText : UiStyle.BodyText;
+        }
 
         var defaultInset = ImGui.GetStyle().CellPadding.X;
         var insetAdjustment = MathF.Max(0f, defaultInset - UiStyle.ListStatusHorizontalInset);
@@ -363,7 +464,85 @@ internal sealed partial class DirectoryBrowserWindow
             ImGui.SetCursorPosX(ImGui.GetCursorPosX() - insetAdjustment);
         }
 
-        DrawText(venue.StatusLine, color);
+        DrawText(text, color);
+    }
+
+    // A gold star for favorites and a green check for visited venues, right-aligned in the venue cell.
+    private void DrawVenueRowMarkers(PreparedVenue venue, float rightX, float rowTop, float rowHeight)
+    {
+        var isFavorite = IsPreferredVenue(_favoriteVenueIds, venue.Id);
+        var isVisited = IsPreferredVenue(_visitedVenueIds, venue.Id);
+        var hasEvents = TryGetUpcomingVenueEvents(venue.Id, out var upcoming, out var liveEvent);
+        if (!isFavorite && !isVisited && !hasEvents)
+        {
+            return;
+        }
+
+        var drawList = ImGui.GetWindowDrawList();
+        using (ImRaii.PushFont(PluginUiFont.IconFont))
+        {
+            var x = rightX;
+            if (hasEvents)
+            {
+                // Partake events at this venue: green while one is on, pink otherwise; a venue that only advertises in the Party Finder gets the ads' bullhorn.
+                var onlyAds = upcoming.TrueForAll(e => e.Source == EventSource.PartyFinder || e.EndsAt <= DateTimeOffset.Now);
+                var icon = IconText(onlyAds ? FontAwesomeIcon.Bullhorn : FontAwesomeIcon.CalendarAlt);
+                var size = ImGui.CalcTextSize(icon);
+                x -= size.X;
+                drawList.AddText(new Vector2(x, rowTop + (rowHeight - size.Y) * 0.5f), ImGui.GetColorU32(liveEvent ? UiStyle.PositiveText : UiStyle.EventText), icon);
+                x -= UiStyle.InlineSpacing;
+            }
+
+            if (isVisited)
+            {
+                var icon = IconText(FontAwesomeIcon.Check);
+                var size = ImGui.CalcTextSize(icon);
+                x -= size.X;
+                drawList.AddText(new Vector2(x, rowTop + (rowHeight - size.Y) * 0.5f), ImGui.GetColorU32(UiStyle.PositiveText), icon);
+                x -= UiStyle.InlineSpacing;
+            }
+
+            if (isFavorite)
+            {
+                var icon = IconText(FontAwesomeIcon.Star);
+                var size = ImGui.CalcTextSize(icon);
+                x -= size.X;
+                drawList.AddText(new Vector2(x, rowTop + (rowHeight - size.Y) * 0.5f), ImGui.GetColorU32(UiStyle.FavoriteText), icon);
+            }
+        }
+    }
+
+    private void DrawVenueRowContextMenu(PreparedVenue venue)
+    {
+        using var menu = ImRaii.ContextPopupItem("VenueRowMenu");
+        if (!menu)
+        {
+            return;
+        }
+
+        var isFavorite = IsPreferredVenue(_favoriteVenueIds, venue.Id);
+        if (ImGui.MenuItem(isFavorite ? "Remove from favorites" : "Add to favorites"))
+        {
+            SetPreferredVenue(_configuration.FavoriteVenueIds, _favoriteVenueIds, venue.Id, !isFavorite);
+        }
+
+        var isVisited = IsPreferredVenue(_visitedVenueIds, venue.Id);
+        if (ImGui.MenuItem(isVisited ? "Unmark as visited" : "Mark as visited"))
+        {
+            SetPreferredVenue(_configuration.VisitedVenueIds, _visitedVenueIds, venue.Id, !isVisited);
+        }
+
+        var isHidden = _hiddenVenueIds.Contains(venue.Id);
+        if (ImGui.MenuItem(isHidden ? "Show in the list again" : "Hide from the list"))
+        {
+            SetVenueHidden(venue, !isHidden);
+        }
+
+        ImGui.Separator();
+        if (ImGui.MenuItem("Copy address"))
+        {
+            ImGui.SetClipboardText(venue.DetailedAddress);
+        }
     }
 
     private void DrawVenueTableEmptyState()
@@ -372,7 +551,9 @@ internal sealed partial class DirectoryBrowserWindow
         {
             DrawText(GetEmptySelectionMessage(), UiStyle.BodyStrongText);
             DrawVerticalRhythm(0.35f);
-            DrawMutedText("Adjust the active filters or refresh the venue list.");
+            DrawMutedText(_filters.HiddenOnly
+                ? "Hide a venue with the eye button in its details or from its right-click menu."
+                : "Adjust the active filters or refresh the venue list.");
         });
     }
 }

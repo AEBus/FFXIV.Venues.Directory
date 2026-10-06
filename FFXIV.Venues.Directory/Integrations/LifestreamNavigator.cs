@@ -1,6 +1,7 @@
 using System;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Ipc;
+using FFXIV.Venues.Directory.Infrastructure;
 
 namespace FFXIV.Venues.Directory.Integrations;
 
@@ -37,6 +38,7 @@ internal sealed class LifestreamNavigator
         }
         catch (Exception ex)
         {
+            DalamudServices.PluginLog.Warning(ex, "Lifestream could not run {Arguments}.", arguments);
             error = ex.Message;
             return false;
         }

@@ -1,52 +1,71 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Numerics;
-using System.Text;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.Interface;
-using Dalamud.Interface.Colors;
-using Dalamud.Interface.Utility;
 using Dalamud.Interface.Utility.Raii;
-using Dalamud.Utility;
-using FFXIV.Venues.Directory.Features.Directory.Domain;
-using FFXIV.Venues.Directory.Features.Directory.Media;
+using FFXIV.Venues.Directory.Features.Directory.Catalog;
+using FFXIV.Venues.Directory.Features.Directory.Places;
 using FFXIV.Venues.Directory.Infrastructure;
+using FFXIV.Venues.Directory.Infrastructure.Net;
+using FFXIV.Venues.Directory.Infrastructure.RichText;
+using FFXIV.Venues.Directory.Infrastructure.Ui;
+using static FFXIV.Venues.Directory.Features.Directory.Catalog.VenueAddresses;
+using static FFXIV.Venues.Directory.Features.Directory.Catalog.VenuePreparer;
+using static FFXIV.Venues.Directory.Features.Directory.Text.DirectoryTime;
 
 namespace FFXIV.Venues.Directory.Features.Directory.Ui;
 
 internal sealed partial class DirectoryBrowserWindow
 {
+    private RichTextView? _venueDescriptionView;
+
+    // Draws a button that opens the zone's map with a flag at the location, when the location has map coordinates.
+    private static void DrawShowOnMapButton(OpenWorldPlace? place, ref bool hasPreviousAction)
+    {
+        if (place?.Coordinates is not { } at)
+        {
+            return;
+        }
+
+        if (DrawWrappedActionButton(FontAwesomeIcon.MapMarkedAlt, "Show on map", UiButtonTone.Secondary, ref hasPreviousAction))
+        {
+            try
+            {
+                DalamudServices.GameGui.OpenMapWithMapLink(new MapLinkPayload(place.TerritoryId, place.MapId, at.X, at.Y));
+            }
+            catch (Exception ex)
+            {
+                DalamudServices.PluginLog.Warning(ex, "Could not open the map for {Zone}.", place.ZoneName);
+            }
+        }
+
+        if (ImGui.IsItemHovered())
+        {
+            ImGui.SetTooltip($"Open the map of {place.ZoneName} with a flag on the spot");
+        }
+    }
+
     private void DrawVenueDetails(PreparedVenue venue, bool allowBanner)
     {
         var detailBuildPending = false;
         var bannerDrawn = false;
-        if (allowBanner)
+        if (allowBanner && venue.Source.BannerUri is { } bannerUri)
         {
-            var banner = _venueService.GetVenueBanner(venue.Id, venue.Source.BannerUri);
+            var banner = _remoteImages.Get(bannerUri.ToString(), out var bannerFailed);
             if (banner != null)
             {
                 var padding = ImGui.GetStyle().WindowPadding.X * 2f;
                 var maxWidth = MathF.Max(0f, _rightPaneWidth - padding);
-                var targetWidth = _isNarrowDetailDrawerActive
-                    ? Scale(NarrowDetailBannerWidth)
-                    : Scale(BannerMaxWidth);
-                var width = MathF.Min(maxWidth, targetWidth);
-                if (_isNarrowDetailDrawerActive)
-                {
-                    var availableWidth = MathF.Max(0f, ImGui.GetContentRegionAvail().X);
-                    if (availableWidth > width)
-                    {
-                        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + ((availableWidth - width) * 0.5f));
-                    }
-                }
-
+                var width = MathF.Min(maxWidth, Scale(BannerMaxWidth));
                 var aspect = banner.Width == 0 ? 0.5f : banner.Height / (float)banner.Width;
                 var size = new Vector2(width, MathF.Max(Scale(120f), width * aspect));
-                ImGui.Image(banner.Handle, size);
+                DrawRoundedImage(banner.Handle, size);
+                ImagePreview.HandleHover(banner, bannerUri.ToString(), _configuration.PreviewImagesOnHover);
                 bannerDrawn = true;
             }
-            else if (_venueService.IsVenueBannerLoading(venue.Id, venue.Source.BannerUri))
+            else if (!bannerFailed)
             {
                 DrawMutedText("Loading banner...");
                 bannerDrawn = true;
@@ -62,118 +81,92 @@ internal sealed partial class DirectoryBrowserWindow
             DrawVerticalRhythm(0.5f);
         }
 
-        DrawVenueDetailHeader(venue.DisplayName);
         var routeOptions = detailsReady && details.RouteOptions.Length > 0
             ? details.RouteOptions
             : GetImmediateRouteOptions(venue);
         var selectedRouteIndex = GetSelectedRouteIndex(venue.Id, routeOptions.Length);
         var selectedRoute = routeOptions[selectedRouteIndex];
-        DrawVerticalRhythm(0.5f);
-        DrawSection("VenueIdentityCard", UiStyle.DetailInsetBackground, () =>
+
+        DrawVenueHeader(venue);
+        if (routeOptions.Length > 1)
         {
-            DrawSectionHeader(routeOptions.Length > 1 ? "Route" : "Address");
-            DrawVerticalRhythm(0.25f);
-
-            if (routeOptions.Length > 1)
+            using (ImRaii.ItemWidth(-1f))
+            using (var routeCombo = ImRaii.Combo("##VenueRouteSelector"u8, selectedRoute.DisplayText))
             {
-                using (ImRaii.ItemWidth(-1f))
-                using (var routeCombo = ImRaii.Combo("##VenueRouteSelector"u8, selectedRoute.DisplayText))
+                if (routeCombo)
                 {
-                    if (routeCombo)
+                    for (var i = 0; i < routeOptions.Length; i++)
                     {
-                        for (var i = 0; i < routeOptions.Length; i++)
+                        var isSelected = i == selectedRouteIndex;
+                        if (ImGui.Selectable(routeOptions[i].DisplayText, isSelected))
                         {
-                            var isSelected = i == selectedRouteIndex;
-                            if (ImGui.Selectable(routeOptions[i].DisplayText, isSelected))
-                            {
-                                _selectedRouteIndices[venue.Id] = i;
-                                selectedRouteIndex = i;
-                                selectedRoute = routeOptions[i];
-                            }
+                            _selectedRouteIndices[venue.Id] = i;
+                            selectedRouteIndex = i;
+                            selectedRoute = routeOptions[i];
+                        }
 
-                            if (isSelected)
-                            {
-                                ImGui.SetItemDefaultFocus();
-                            }
+                        if (isSelected)
+                        {
+                            ImGui.SetItemDefaultFocus();
                         }
                     }
                 }
             }
-            else
+        }
+        else
+        {
+            DrawTextWrapped(selectedRoute.DisplayText, UiStyle.BodyMutedText);
+        }
+
+        if (detailBuildPending && !string.IsNullOrWhiteSpace(venue.Source.Location?.Override))
+        {
+            DrawMutedText("Loading additional address options...");
+        }
+
+        DrawVerticalRhythm(0.25f);
+        DrawVenueChips(venue);
+        DrawVerticalRhythm(0.35f);
+
+        var hasPreviousAction = false;
+        if (_lifestreamIpc.IsAvailable)
+        {
+            using var lifestreamDisabled = ImRaii.Disabled(string.IsNullOrWhiteSpace(selectedRoute.LifestreamArguments));
+            if (DrawWrappedActionButton(FontAwesomeIcon.LocationArrow, "Visit", UiButtonTone.Primary, ref hasPreviousAction))
             {
-                using (ImRaii.PushColor(ImGuiCol.Text, UiStyle.BodyText))
+                var arguments = selectedRoute.LifestreamArguments;
+                if (!string.IsNullOrEmpty(arguments) &&
+                    !_lifestreamIpc.TryExecuteCommand(arguments, out var errorMessage))
                 {
-                    DrawBodyTextWrapped(selectedRoute.DisplayText);
+                    DalamudServices.ChatGui.PrintError($"Could not travel with Lifestream: {errorMessage}");
                 }
             }
 
-            if (detailBuildPending && !string.IsNullOrWhiteSpace(venue.Source.Location?.Override))
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
             {
-                DrawVerticalRhythm(0.25f);
-                DrawMutedText("Loading additional address options...");
+                ImGui.SetTooltip("Travel there with Lifestream");
             }
+        }
 
-            DrawVerticalRhythm(0.5f);
-            DrawSectionHeader("Actions");
-            DrawVerticalRhythm(0.25f);
+        DrawShowOnMapButton(selectedRoute.Place, ref hasPreviousAction);
+        if (DrawWrappedActionButton(FontAwesomeIcon.Copy, "Copy address", UiButtonTone.Secondary, ref hasPreviousAction))
+        {
+            ImGui.SetClipboardText(selectedRoute.CopyText);
+        }
 
-            var hasPreviousAction = false;
-            if (DrawWrappedActionButton(FontAwesomeIcon.Copy, "Copy address", UiButtonTone.Secondary, ref hasPreviousAction))
-            {
-                ImGui.SetClipboardText(selectedRoute.CopyText);
-            }
+        if (venue.Source.Website != null &&
+            DrawWrappedActionButton(FontAwesomeIcon.Globe, "Website", UiButtonTone.Secondary, ref hasPreviousAction))
+        {
+            WebLink.Open(venue.Source.Website.ToString());
+        }
 
-            if (_lifestreamIpc.IsAvailable)
-            {
-                using var lifestreamDisabled = ImRaii.Disabled(string.IsNullOrWhiteSpace(selectedRoute.LifestreamArguments));
-                if (DrawWrappedActionButton(FontAwesomeIcon.LocationArrow, "Visit (Lifestream)", UiButtonTone.Primary, ref hasPreviousAction))
-                {
-                    var arguments = selectedRoute.LifestreamArguments;
-                    if (!string.IsNullOrEmpty(arguments) &&
-                        !_lifestreamIpc.TryExecuteCommand(arguments, out var errorMessage))
-                    {
-                        DalamudServices.ChatGui.PrintError($"Failed to execute Lifestream command: {errorMessage}");
-                    }
-                }
-            }
+        if (venue.Source.Discord != null &&
+            DrawWrappedActionButton(FontAwesomeIcon.CommentAlt, "Discord", UiButtonTone.Secondary, ref hasPreviousAction))
+        {
+            WebLink.Open(venue.Source.Discord.ToString());
+        }
 
-            if (venue.Source.Website != null &&
-                DrawWrappedActionButton(FontAwesomeIcon.Globe, "Website", UiButtonTone.Secondary, ref hasPreviousAction))
-            {
-                Util.OpenLink(venue.Source.Website.ToString());
-            }
-
-            if (venue.Source.Discord != null &&
-                DrawWrappedActionButton(FontAwesomeIcon.CommentAlt, "Discord", UiButtonTone.Secondary, ref hasPreviousAction))
-            {
-                Util.OpenLink(venue.Source.Discord.ToString());
-            }
-
-            DrawVerticalRhythm(0.5f);
-            DrawSectionHeader("Saved markers");
-            DrawVerticalRhythm(0.25f);
-
-            using (ImRaii.PushId(HashCode.Combine("VenuePreferenceActions", venue.Id)))
-            {
-                var stackPreferences = ImGui.GetContentRegionAvail().X < Scale(280f);
-                var isFavorite = IsPreferredVenue(_favoriteVenueIds, venue.Id);
-                if (ImGui.Checkbox("Favorite", ref isFavorite))
-                {
-                    SetPreferredVenue(_configuration.FavoriteVenueIds, _favoriteVenueIds, venue.Id, isFavorite);
-                }
-
-                if (!stackPreferences)
-                {
-                    ImGui.SameLine(0f, UiStyle.InlineGroupSpacing);
-                }
-
-                var isVisited = IsPreferredVenue(_visitedVenueIds, venue.Id);
-                if (ImGui.Checkbox("Visited", ref isVisited))
-                {
-                    SetPreferredVenue(_configuration.VisitedVenueIds, _visitedVenueIds, venue.Id, isVisited);
-                }
-            }
-        });
+        DrawVerticalRhythm(0.5f);
+        DrawVenueEventsCard(venue);
 
         if (venue.WarningText != null)
         {
@@ -188,66 +181,75 @@ internal sealed partial class DirectoryBrowserWindow
         if (detailsReady)
         {
             var schedulePending = details.SchedulePending;
-            if (details.DescriptionLines.Length > 0)
+            for (var i = 0; i < details.Notices.Length; i++)
             {
-                DrawSection("DescriptionCard", "Description", () =>
+                var notice = details.Notices[i];
+                DrawSection($"NoticeCard{i}", notice.IsWarning ? UiStyle.SectionHighlightBackground : null, () =>
                 {
-                    DrawDescriptionWithLinks(details.DescriptionLines);
+                    DrawSectionHeader(
+                        notice.IsWarning ? FontAwesomeIcon.ExclamationTriangle : FontAwesomeIcon.InfoCircle,
+                        "Notice",
+                        notice.IsWarning ? UiStyle.WarningText : null);
+                    DrawVerticalRhythm(0.25f);
+                    DrawBodyTextWrapped(notice.Message);
                 });
             }
 
-            DrawSection("ScheduleCard", "Schedule", UiStyle.SectionHighlightBackground, () =>
+            if (!details.Description.IsEmpty)
             {
-                if (!string.IsNullOrWhiteSpace(details.ResolutionSummary))
+                DrawSection("DescriptionCard", "Description", () =>
                 {
-                    DrawText(details.ResolutionSummary, UiStyle.SectionAccentText);
-                    DrawVerticalRhythm(0.25f);
-                }
+                    _venueDescriptionView ??= new RichTextView(_remoteImages, () => _configuration.LoadDescriptionImages, () => _configuration.PreviewImagesOnHover);
+                    _venueDescriptionView.Draw(details.Description, RichTextVersion, FormatRichTime, DescribeRichTime, RichTextColors);
+                });
+            }
 
-                if (details.ScheduleRows.Length > 0)
+            // A venue known only from its ads has no hours to show.
+            if (BuildResolutionSummary(venue.Status) != null || HasScheduleEntries(venue.Source.Schedule) || details.ScheduleAmendments.Length > 0)
+            {
+                DrawSection("ScheduleCard", "Schedule", UiStyle.SectionHighlightBackground, () =>
                 {
-                    var tableFlags = ImGuiTableFlags.SizingStretchProp |
-                                     ImGuiTableFlags.NoHostExtendX |
-                                     ImGuiTableFlags.BordersOuterH |
-                                     ImGuiTableFlags.BordersInnerH;
-                    var originalCursorX = ImGui.GetCursorPosX();
-                    var fullBleedWidth = MathF.Max(0f, ImGui.GetContentRegionAvail().X + UiStyle.CardPadding.X);
-                    ImGui.SetCursorPosX(MathF.Max(0f, originalCursorX - UiStyle.CardPadding.X));
-                    using var scheduleCellPadding = ImRaii.PushStyle(
-                        ImGuiStyleVar.CellPadding,
-                        new Vector2(UiStyle.CardPadding.X, ImGui.GetStyle().CellPadding.Y));
-                    using (var scheduleTable = ImRaii.Table("VenueScheduleTable"u8, 2, tableFlags, new Vector2(fullBleedWidth, 0f)))
+                    if (BuildResolutionSummary(venue.Status) is { } resolutionSummary)
                     {
-                        if (scheduleTable)
-                        {
-                            ImGui.TableSetupColumn("Day", ImGuiTableColumnFlags.WidthStretch, 0.62f);
-                            ImGui.TableSetupColumn("Time", ImGuiTableColumnFlags.WidthStretch, 0.38f);
-
-                            foreach (var schedule in details.ScheduleRows)
-                            {
-                                var labelColor = schedule.IsActive ? UiStyle.SectionAccentText : UiStyle.BodyText;
-
-                                ImGui.TableNextRow();
-                                ImGui.TableNextColumn();
-                                DrawLeftInsetTableText(schedule.Label, labelColor);
-                                ImGui.TableNextColumn();
-                                DrawRightAlignedTableText(schedule.TimeRange, labelColor);
-                            }
-                        }
+                        DrawText(resolutionSummary, venue.IsOpen ? UiStyle.PositiveText : UiStyle.BodyText);
+                        DrawVerticalRhythm(0.25f);
                     }
 
-                    DrawVerticalRhythm(0.25f);
-                    DrawMutedText("All times are in your timezone.");
-                }
-                else if (schedulePending && HasScheduleEntries(venue.Source.Schedule))
-                {
-                    DrawMutedText("Loading schedule...");
-                }
-                else if (HasScheduleEntries(venue.Source.Schedule))
-                {
-                    DrawMutedText("No schedule available.");
-                }
-            });
+                    var showsTimes = false;
+                    if (details.ScheduleRows.Length > 0)
+                    {
+                        DrawScheduleTable("VenueScheduleTable", details.ScheduleRows);
+                        showsTimes = true;
+                    }
+                    else if (schedulePending && HasScheduleEntries(venue.Source.Schedule))
+                    {
+                        DrawMutedText("Loading schedule...");
+                    }
+                    else if (HasScheduleEntries(venue.Source.Schedule))
+                    {
+                        DrawMutedText("No schedule available.");
+                    }
+
+                    if (details.ScheduleAmendments.Length > 0)
+                    {
+                        if (HasScheduleEntries(venue.Source.Schedule))
+                        {
+                            DrawVerticalRhythm(0.5f);
+                        }
+
+                        DrawSectionHeader("Schedule amendments");
+                        DrawVerticalRhythm(0.25f);
+                        DrawScheduleTable("VenueScheduleAmendmentsTable", details.ScheduleAmendments);
+                        showsTimes = true;
+                    }
+
+                    if (showsTimes)
+                    {
+                        DrawVerticalRhythm(0.25f);
+                        DrawMutedText("All times are in your timezone.");
+                    }
+                });
+            }
         }
         else
         {
@@ -270,12 +272,16 @@ internal sealed partial class DirectoryBrowserWindow
             });
         }
 
+        if (BuildResolutionSummary(venue.Status) == null && !HasScheduleEntries(venue.Source.Schedule))
+        {
+            return;
+        }
+
         DrawSection("ScheduleLoadingCard", "Schedule", UiStyle.SectionHighlightBackground, () =>
         {
-            var resolutionSummary = BuildResolutionSummary(venue.Source.Resolution);
-            if (!string.IsNullOrWhiteSpace(resolutionSummary))
+            if (BuildResolutionSummary(venue.Status) is { } resolutionSummary)
             {
-                DrawText(resolutionSummary, UiStyle.SectionAccentText);
+                DrawText(resolutionSummary, venue.IsOpen ? UiStyle.PositiveText : UiStyle.BodyText);
                 DrawVerticalRhythm(0.25f);
             }
 
@@ -291,11 +297,39 @@ internal sealed partial class DirectoryBrowserWindow
         });
     }
 
-    private static bool HasNonEmptyDescription(IEnumerable<string>? lines) =>
-        lines?.Any(line => !string.IsNullOrWhiteSpace(line)) == true;
+    private static void DrawScheduleTable(string id, IReadOnlyList<PreparedScheduleRow> rows)
+    {
+        var tableFlags = ImGuiTableFlags.SizingStretchProp |
+                         ImGuiTableFlags.NoHostExtendX |
+                         ImGuiTableFlags.BordersOuterH |
+                         ImGuiTableFlags.BordersInnerH;
+        var originalCursorX = ImGui.GetCursorPosX();
+        var fullBleedWidth = MathF.Max(0f, ImGui.GetContentRegionAvail().X + UiStyle.CardPadding.X);
+        ImGui.SetCursorPosX(MathF.Max(0f, originalCursorX - UiStyle.CardPadding.X));
+        using var scheduleCellPadding = ImRaii.PushStyle(
+            ImGuiStyleVar.CellPadding,
+            new Vector2(UiStyle.CardPadding.X, ImGui.GetStyle().CellPadding.Y));
+        using var scheduleTable = ImRaii.Table(id, 2, tableFlags, new Vector2(fullBleedWidth, 0f));
+        if (!scheduleTable)
+        {
+            return;
+        }
 
-    private static bool HasScheduleEntries(IEnumerable<DirectorySchedule>? schedules) =>
-        schedules?.Any() == true;
+        ImGui.TableSetupColumn("Day", ImGuiTableColumnFlags.WidthStretch, 0.62f);
+        ImGui.TableSetupColumn("Time", ImGuiTableColumnFlags.WidthStretch, 0.38f);
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var row in rows)
+        {
+            var labelColor = row.IsActiveAt(now) ? UiStyle.SectionAccentText : UiStyle.BodyText;
+
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            DrawLeftInsetTableText(row.Label, labelColor);
+            ImGui.TableNextColumn();
+            DrawRightAlignedTableText(row.TimeRange, labelColor);
+        }
+    }
 
     private static void DrawRightAlignedTableText(string text, Vector4 color)
     {
@@ -308,14 +342,9 @@ internal sealed partial class DirectoryBrowserWindow
             ImGui.SetCursorPosX(cursorX + (availableWidth - textWidth));
         }
 
-        ImGui.PushTextWrapPos(0f);
-        try
+        using (ImRaii.TextWrapPos(0f))
         {
             DrawText(text, color);
-        }
-        finally
-        {
-            ImGui.PopTextWrapPos();
         }
     }
 
@@ -324,9 +353,6 @@ internal sealed partial class DirectoryBrowserWindow
         ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Scale(12f));
         DrawText(text, color);
     }
-
-    private void DrawSection(string id, Action content) =>
-        DrawSection(id, null, null, content);
 
     private void DrawSection(string id, string title, Action content) =>
         DrawSection(id, title, null, content);
@@ -353,24 +379,17 @@ internal sealed partial class DirectoryBrowserWindow
                 DrawVerticalRhythm(0.5f);
                 ImGui.SetCursorPosX(ImGui.GetCursorPosX() + padding.X);
                 var wrapRightEdge = ImGui.GetCursorPosX() + MathF.Max(0f, contentWidth - padding.X * 2f);
-                ImGui.PushTextWrapPos(wrapRightEdge);
-                try
+                using (ImRaii.TextWrapPos(wrapRightEdge))
+                using (ImRaii.Group())
+                using (ImRaii.PushColor(ImGuiCol.Text, UiStyle.BodyText))
                 {
-                    using (ImRaii.Group())
-                    using (ImRaii.PushColor(ImGuiCol.Text, UiStyle.BodyText))
+                    if (!string.IsNullOrWhiteSpace(title))
                     {
-                        if (!string.IsNullOrWhiteSpace(title))
-                        {
-                            DrawSectionHeader(title);
-                            DrawVerticalRhythm(0.25f);
-                        }
-
-                        content();
+                        DrawSectionHeader(title);
+                        DrawVerticalRhythm(0.25f);
                     }
-                }
-                finally
-                {
-                    ImGui.PopTextWrapPos();
+
+                    content();
                 }
 
                 DrawVerticalRhythm(0.5f);
@@ -429,218 +448,6 @@ internal sealed partial class DirectoryBrowserWindow
         ImGui.SetCursorPos(new Vector2(startPosX, y + rowHeight + spacing));
     }
 
-    private static void DrawDescriptionWithLinks(IReadOnlyList<PreparedDescriptionLine> lines)
-    {
-        for (var lineIndex = 0; lineIndex < lines.Count; lineIndex++)
-        {
-            var line = lines[lineIndex];
-            if (line.IsBlank)
-            {
-                DrawVerticalRhythm(0.5f);
-                continue;
-            }
-
-            if (!DescriptionLineHasLinks(line))
-            {
-                DrawWrappedDescriptionTextLine(line);
-                continue;
-            }
-
-            DrawWrappedDescriptionLine(line, lineIndex);
-        }
-    }
-
-    private static bool DescriptionLineHasLinks(PreparedDescriptionLine line) =>
-        line.Segments.Any(segment => !string.IsNullOrEmpty(segment.Url));
-
-    private static void DrawWrappedDescriptionTextLine(PreparedDescriptionLine line)
-    {
-        var wrapRightEdge = ImGui.GetCursorPosX() + MathF.Max(0f, ImGui.GetContentRegionAvail().X - Scale(12f));
-        ImGui.PushTextWrapPos(wrapRightEdge);
-        try
-        {
-            ImGui.TextUnformatted(GetPreparedDescriptionLineText(line));
-        }
-        finally
-        {
-            ImGui.PopTextWrapPos();
-        }
-    }
-
-    private static string GetPreparedDescriptionLineText(PreparedDescriptionLine line)
-    {
-        if (line.Segments.Length == 0)
-        {
-            return string.Empty;
-        }
-
-        if (line.Segments.Length == 1)
-        {
-            return line.Segments[0].Text;
-        }
-
-        var builder = new StringBuilder();
-        foreach (var segment in line.Segments)
-        {
-            builder.Append(segment.Text);
-        }
-
-        return builder.ToString();
-    }
-
-    private static void DrawWrappedDescriptionLine(PreparedDescriptionLine line, int lineIndex)
-    {
-        var lineStartScreenX = ImGui.GetCursorScreenPos().X;
-        var rightEdge = lineStartScreenX + MathF.Max(0f, ImGui.GetContentRegionAvail().X - Scale(12f));
-        var isLineStart = true;
-        var lastItemRightEdge = lineStartScreenX;
-        var renderChunkIndex = 0;
-
-        foreach (var segment in EnumerateDescriptionRenderTokens(line.Segments))
-        {
-            var text = segment.Text;
-            if (text.Length == 0)
-            {
-                continue;
-            }
-
-            var width = ImGui.CalcTextSize(text).X;
-            if (!isLineStart &&
-                lastItemRightEdge + width > rightEdge)
-            {
-                ImGui.NewLine();
-                isLineStart = true;
-                lastItemRightEdge = lineStartScreenX;
-                text = text.TrimStart();
-                if (text.Length == 0)
-                {
-                    continue;
-                }
-
-                width = ImGui.CalcTextSize(text).X;
-            }
-
-            if (!isLineStart)
-            {
-                ImGui.SameLine(0f, 0f);
-            }
-
-            DrawDescriptionSegment(text, segment.Url, lineIndex, renderChunkIndex);
-            lastItemRightEdge = ImGui.GetItemRectMax().X;
-            isLineStart = false;
-            renderChunkIndex++;
-        }
-    }
-
-    private static IEnumerable<PreparedDescriptionSegment> EnumerateDescriptionRenderTokens(
-        IReadOnlyList<PreparedDescriptionSegment> segments)
-    {
-        var emittedAny = false;
-        var pendingWhitespace = false;
-
-        foreach (var segment in segments)
-        {
-            if (string.IsNullOrEmpty(segment.Text))
-            {
-                continue;
-            }
-
-            if (!string.IsNullOrEmpty(segment.Url))
-            {
-                var linkText = pendingWhitespace && emittedAny
-                    ? " " + segment.Text.Trim()
-                    : segment.Text.Trim();
-                if (linkText.Length == 0)
-                {
-                    pendingWhitespace = false;
-                    continue;
-                }
-
-                yield return new PreparedDescriptionSegment(linkText, segment.Url);
-                emittedAny = true;
-                pendingWhitespace = false;
-                continue;
-            }
-
-            var start = 0;
-            while (start < segment.Text.Length)
-            {
-                while (start < segment.Text.Length && char.IsWhiteSpace(segment.Text[start]))
-                {
-                    pendingWhitespace = emittedAny || pendingWhitespace;
-                    start++;
-                }
-
-                if (start >= segment.Text.Length)
-                {
-                    break;
-                }
-
-                var end = start + 1;
-                while (end < segment.Text.Length && !char.IsWhiteSpace(segment.Text[end]))
-                {
-                    end++;
-                }
-
-                var tokenText = segment.Text[start..end];
-                if (pendingWhitespace && emittedAny)
-                {
-                    tokenText = " " + tokenText;
-                }
-
-                yield return new PreparedDescriptionSegment(tokenText, null);
-                emittedAny = true;
-                pendingWhitespace = false;
-                start = end;
-            }
-        }
-    }
-
-    private static void DrawDescriptionSegment(string text, string? url, int lineIndex, int segmentIndex)
-    {
-        if (string.IsNullOrEmpty(url))
-        {
-            ImGui.TextUnformatted(text);
-            return;
-        }
-
-        using var linkId = ImRaii.PushId(HashCode.Combine("DescLink", lineIndex, segmentIndex, url));
-        using (ImRaii.PushColor(ImGuiCol.Text, UiStyle.LinkText))
-        {
-            if (ImGui.Selectable(text, false, ImGuiSelectableFlags.DontClosePopups, ImGui.CalcTextSize(text)))
-            {
-                Util.OpenLink(url);
-            }
-        }
-
-        if (ImGui.IsItemHovered())
-        {
-            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
-            ImGui.SetTooltip("Open link");
-        }
-    }
-
-    private static bool DrawWrappedActionButton(string label, UiButtonTone tone, ref bool hasPreviousAction)
-    {
-        if (hasPreviousAction)
-        {
-            var nextButtonSize = MeasureActionButtonSize(label);
-            var lineRightEdge = ImGui.GetCursorScreenPos().X + ImGui.GetContentRegionAvail().X;
-            var nextButtonRightEdge = ImGui.GetItemRectMax().X + UiStyle.InlineSpacing + nextButtonSize.X;
-            if (nextButtonRightEdge <= lineRightEdge)
-            {
-                ImGui.SameLine(0f, UiStyle.InlineSpacing);
-            }
-            else
-            {
-                DrawVerticalRhythm(0.25f);
-            }
-        }
-
-        hasPreviousAction = true;
-        return DrawActionButton(label, tone);
-    }
-
     private static bool DrawWrappedActionButton(FontAwesomeIcon icon, string label, UiButtonTone tone, ref bool hasPreviousAction) =>
         DrawWrappedActionButton(icon, label, tone, ref hasPreviousAction, MeasureActionButtonSize(icon, label));
 
@@ -669,26 +476,102 @@ internal sealed partial class DirectoryBrowserWindow
         return DrawActionButton(icon, label, tone);
     }
 
-    private void DrawVenueDetailHeader(string headerName)
+    private void DrawVenueHeader(PreparedVenue venue)
     {
-        ImGui.SetWindowFontScale(1.4f);
-        try
+        var isFavorite = IsPreferredVenue(_favoriteVenueIds, venue.Id);
+        var isVisited = IsPreferredVenue(_visitedVenueIds, venue.Id);
+        var isHidden = _hiddenVenueIds.Contains(venue.Id);
+        var hideIcon = isHidden ? FontAwesomeIcon.Eye : FontAwesomeIcon.EyeSlash;
+        var buttonsWidth = MeasureIconActionButtonSize(FontAwesomeIcon.Star).X +
+                           MeasureIconActionButtonSize(FontAwesomeIcon.Check).X +
+                           MeasureIconActionButtonSize(hideIcon).X +
+                           UiStyle.InlineSpacing * 2f;
+        var start = ImGui.GetCursorPos();
+        var buttonsX = start.X + MathF.Max(0f, ImGui.GetContentRegionAvail().X - buttonsWidth);
+
+        ImGui.SetCursorPos(new Vector2(buttonsX, start.Y));
+        float buttonsBottom;
+        using (ImRaii.PushId(venue.Id))
         {
-            var headerSize = ImGui.CalcTextSize(headerName);
-            var headerPos = ImGui.GetCursorScreenPos();
-            var headerDrawList = ImGui.GetWindowDrawList();
-            var headerShadow = ImGui.GetColorU32(UiStyle.HeaderShadowText);
-            var headerColor = ImGui.GetColorU32(UiStyle.DisplayTitleText);
-            headerDrawList.AddText(new Vector2(headerPos.X - Scale(1f), headerPos.Y), headerShadow, headerName);
-            headerDrawList.AddText(new Vector2(headerPos.X + Scale(1f), headerPos.Y), headerShadow, headerName);
-            headerDrawList.AddText(new Vector2(headerPos.X, headerPos.Y - Scale(1f)), headerShadow, headerName);
-            headerDrawList.AddText(new Vector2(headerPos.X, headerPos.Y + Scale(1f)), headerShadow, headerName);
-            headerDrawList.AddText(headerPos, headerColor, headerName);
-            ImGui.SetCursorScreenPos(new Vector2(headerPos.X, headerPos.Y + headerSize.Y + UiStyle.CompactRowSpacing));
+            if (DrawToggleIconButton("Favorite", FontAwesomeIcon.Star, isFavorite, isFavorite ? "Remove from favorites" : "Add to favorites", UiStyle.FavoriteText))
+            {
+                SetPreferredVenue(_configuration.FavoriteVenueIds, _favoriteVenueIds, venue.Id, !isFavorite);
+            }
+
+            ImGui.SameLine(0f, UiStyle.InlineSpacing);
+            if (DrawToggleIconButton("Visited", FontAwesomeIcon.Check, isVisited, isVisited ? "Unmark as visited" : "Mark as visited", UiStyle.PositiveText))
+            {
+                SetPreferredVenue(_configuration.VisitedVenueIds, _visitedVenueIds, venue.Id, !isVisited);
+            }
+
+            ImGui.SameLine(0f, UiStyle.InlineSpacing);
+            if (DrawToggleIconButton("Hide", hideIcon, isHidden, isHidden ? "Show this venue in the list again" : "Hide this venue from the list"))
+            {
+                SetVenueHidden(venue, !isHidden);
+            }
+
+            buttonsBottom = ImGui.GetItemRectMax().Y;
         }
-        finally
+
+        ImGui.SetCursorPos(start);
+        DrawDisplayTitleText(venue.DisplayName, buttonsX - UiStyle.InlineGroupSpacing);
+        var cursor = ImGui.GetCursorScreenPos();
+        var belowButtons = buttonsBottom + ImGui.GetStyle().ItemSpacing.Y;
+        if (belowButtons > cursor.Y)
         {
-            ImGui.SetWindowFontScale(1f);
+            ImGui.SetCursorScreenPos(new Vector2(cursor.X, belowButtons));
+        }
+    }
+
+    private void DrawVenueChips(PreparedVenue venue)
+    {
+        var rightEdge = ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X;
+        var first = true;
+        var now = DateTimeOffset.Now;
+        if (venue.IsOpen && venue.Status.Opening is { } open)
+        {
+            DrawInfoChip("StatusChip", venue.Status.Advertised ? VenueStatus.AdvertisedLine : open.IsAroundTheClock ? "Open 24/7" : $"Open now · until {FormatClosingTime(open.End)}", UiChipTone.Positive, rightEdge, ref first);
+        }
+        else if (IsOpeningSoon(venue, now))
+        {
+            DrawInfoChip("StatusChip", FormatOpensIn(venue.Status.Opening!.Value.Start - now), UiChipTone.Caution, rightEdge, ref first);
+        }
+        else if (venue.Status.Opening != null)
+        {
+            DrawInfoChip("StatusChip", venue.StatusLine, UiChipTone.Neutral, rightEdge, ref first);
+        }
+
+        if (IsVenueHere(venue))
+        {
+            DrawInfoChip("HereChip", "You're here", UiChipTone.Positive, rightEdge, ref first);
+        }
+
+        if (venue.IsNsfw)
+        {
+            DrawInfoChip("NsfwChip", "NSFW", UiChipTone.Warning, rightEdge, ref first);
+        }
+
+        var size = venue.VenueTypeLabel switch
+        {
+            "A" => "Apartment",
+            "S" => "Small house",
+            "M" => "Medium house",
+            "L" => "Large house",
+            _ => null,
+        };
+        if (size != null)
+        {
+            DrawInfoChip("SizeChip", size, UiChipTone.Neutral, rightEdge, ref first);
+        }
+
+        if (venue.Region != null)
+        {
+            DrawInfoChip("RegionChip", venue.Region, UiChipTone.Neutral, rightEdge, ref first);
+        }
+
+        if (IsUnlistedVenue(venue))
+        {
+            DrawInfoChip("UnlistedChip", "Not on FFXIV Venues", UiChipTone.Accent, rightEdge, ref first);
         }
     }
 }
