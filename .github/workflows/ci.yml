@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: AEBus/dalamud-plugin-kit/.github/workflows/build.yml@v1
+    with:
+      project: FFXIV.Venues.Directory/FFXIV.Venues.Directory.csproj
+
+  # The build D17 would make of the same commit; it clones the public repository, so it runs on pushes, not on pull requests from forks.
+  plogon:
+    if: github.event_name != 'pull_request'
+    uses: AEBus/dalamud-plugin-kit/.github/workflows/plogon.yml@v1
+    with:
+      internal-name: FFXIV.Venues.Directory
+      project-path: FFXIV.Venues.Directory
+      icon: FFXIV.Venues.Directory/icon.png
