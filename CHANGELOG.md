@@ -2,23 +2,23 @@
 
 ## 1.2.0.0
 
-Events, Party Finder ads and a reworked directory.
+This is a pretty big update. The directory now includes community events, Party Finder venue ads, notifications, and quite a few changes to how venues are displayed and filtered.
 
-- New Events tab with the FFXIV community events posted on Partake for the next two weeks. Filter them by time, age rating, tags and location, and mark the ones you plan to attend with "I'm going".
-- Venue ads from the in-game Party Finder, as collected by xivpf.com, appear among the events and on the pages of their venues.
-- Venues that are not listed on FFXIV Venues but post events on Partake or advertise in the Party Finder can be shown in the venue list.
-- A venue's details list its upcoming events and its current Party Finder ads.
-- Optional notifications: when a favorite venue opens, when an event at a favorite venue starts, and 15 minutes before an event you are going to. They also work while the directory is closed.
-- "My data center" shows the venues and events on the data center your character is on, including after data center travel. Each character remembers its own location filters.
-- When you stand on a listed venue's plot or are inside it, the top bar tells you where you are and lets you mark the venue as visited.
-- Hide venues you are not interested in; the top bar offers an undo, and the Hidden filter brings them back.
-- Descriptions keep their formatting: headings, bold and italic text, lists, links and pictures, including animated GIF, WebP and APNG images. Pictures are only loaded over https and can be turned off.
-- Hovering a banner or a picture can show it in full (off by default).
-- Places outside the housing districts can be shown on the game map.
-- The settings open in their own window, with pages for appearance, images, events and notifications, and an About page with this changelog. Choose the directory's own theme or your Dalamud theme, an interface size, and a 12- or 24-hour clock.
-- Schedules follow each venue's next actual opening in your timezone. Monthly schedules, breaks, one-off openings and active venue notices are shown, and openings more than a week away show their date.
-- Venue names and descriptions show symbols and stylized letters as written.
-- A clear message is shown when FFXIV Venues refuses requests from your network or region.
+- Added a new Events tab. It shows FFXIV community events posted on Partake for the next two weeks, with filters for time, age rating, tags and location. You can also mark events with "I'm going" if you plan to attend.
+- Party Finder venue ads collected by xivpf.com can now appear alongside events, as well as directly on the matching venue's page.
+- Venues don't necessarily have to be listed on FFXIV Venues anymore. If a venue has an event on Partake or is currently advertising in Party Finder, it can still appear in the directory.
+- Venue pages now show their upcoming events and any Party Finder ads that are currently active.
+- Added optional notifications for favorite venues and events. The plugin can notify you when a favorite venue opens, when an event at a favorite venue starts, or 15 minutes before an event you've marked as going to. These notifications still work while the directory window is closed.
+- Added "My data center" filtering. It follows the data center your current character is actually on, including after Data Center Travel. Location filters are remembered separately for each character.
+- If you're standing on the plot of a listed venue, or you're already inside it, the top bar now tells you which venue you're at and gives you a quick way to mark it as visited.
+- You can now hide venues you're not interested in. There's an undo option in the top bar, and hidden venues can always be found again with the Hidden filter.
+- Venue descriptions now keep much more of their original formatting, including headings, bold and italic text, lists, links and images. Animated GIF, WebP and APNG images are supported too. Images in descriptions are only loaded over HTTPS and can be turned off in settings.
+- Banners and images can optionally be enlarged by hovering over them. This is disabled by default.
+- Locations outside the housing districts can now be opened on the in-game map.
+- Settings have been moved into their own window and split into separate pages for appearance, images, events and notifications. There's also an About page with the changelog. You can use the directory's own theme or your Dalamud theme, change the UI size, and choose between a 12- or 24-hour clock.
+- Schedule handling has been reworked. The directory now tries to show each venue's next actual opening in your local timezone instead of just displaying the raw weekly schedule. Monthly schedules, breaks, one-off openings and active venue notices are supported, and openings more than a week away show the date as well.
+- Venue names and descriptions now show many more symbols and stylized letters; characters the game can't draw are replaced with plain letters instead of showing as boxes.
+- Added a clearer error message for cases where FFXIV Venues refuses requests from your network or region.
 
 ## 1.1.3.0
 
